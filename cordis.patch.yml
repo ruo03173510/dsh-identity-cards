@@ -1,0 +1,6 @@
+- insert:
+    - id: identity-cards
+      name: dsh-identity-cards
+      config:
+        maxCards: 8
+        order: 40
