@@ -23,7 +23,7 @@ export const inject = ['systemPrompt', 'tools']
 const CACHE_TTL_MS = 1500
 let cache = { key: '', at: 0, text: '' }
 
-const VERSION = '1.0.1'
+const VERSION = '1.0.2'
 
 /** 每次加载写一行。分 start / done 两段，才能区分「没跑」和「跑了但没拿到 tools」。 */
 function logLoad(dir, detail) {
@@ -158,7 +158,8 @@ function render(dir, max, opts = {}) {
     )
   }
   lines.push(
-    `规程：会话默认是「默认卡」（未指定身份）。任务明确后直接用 \`use\` 认领合适的卡——自动，只需告知用户；` +
+    `规程：会话默认是「默认卡」（未指定身份、零注入）。任务**明显**属于某张卡才认领——自动，只需告知用户；` +
+      `**归不了类就不认领**，全局契约照常生效，别为了「有身份」硬认一张；` +
       `之后换卡用 \`switch\`（带 auto 可不问，一个会话最多自动两次，第三次起会问）；不允许回到默认卡。` +
       `**任何切卡后，回复第一行必须是「已切至身份卡：<id>」；旧卡判据自此刻起作废。** 不要用 read 重复读卡全文。` +
       `通用命令：list / manual / show / reference / write / use / switch / current / audit / doctor / clean / library。` +

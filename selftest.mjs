@@ -249,7 +249,7 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
   const text = off.section ? off.section.text() : ''
   check('contract:false 关掉全局契约', () => {
     if (!text.includes('## 身份卡')) throw new Error('卡目录还在')
-    if (text.includes('全局契约')) throw new Error('契约没关掉')
+    if (text.includes('## 全局契约')) throw new Error('契约没关掉')
     if (text.includes('不写装饰线')) throw new Error('契约第 1 条还在')
   })
   const on = makeHarness()
