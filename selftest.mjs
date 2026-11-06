@@ -585,5 +585,25 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
   rmSync(root, { recursive: true, force: true })
 }
 
+// 占位检测只看样本节：正文里教「检查待填」不算自己有空位
+{
+  const { tool } = makeHarness()
+  const cardA = ['---', 'id: mention', 'name: 提到占位', 'trigger: [a]', 'expire: [b]', '---', '', '## 2. 任务封装', '', '检查有没有待填的地方。', '', '## 5. 样本', '', '- 正例：某份报告'].join('\n')
+  mkdirSync(join(CARDS, 'mention'), { recursive: true })
+  writeFileSync(join(CARDS, 'mention', 'card.md'), cardA, 'utf8')
+  const cardB = ['---', 'id: blank', 'name: 空样本', 'trigger: [a]', 'expire: [b]', '---', '', '## 2. 任务封装', '', '正常内容。', '', '## 5. 样本', '', '- 待填'].join('\n')
+  mkdirSync(join(CARDS, 'blank'), { recursive: true })
+  writeFileSync(join(CARDS, 'blank', 'card.md'), cardB, 'utf8')
+  const out = String(await tool.execute({ action: 'list' }, { agent: { id: 'ph-1' } }))
+  check('正文提到「待填」不算未填', () => {
+    const line = out.split('\n').find(l => l.startsWith('mention｜')) || ''
+    if (line.includes('未填占位')) throw new Error('误报：' + line)
+  })
+  check('样本节真的是「待填」才算未填', () => {
+    const line = out.split('\n').find(l => l.startsWith('blank｜')) || ''
+    if (!line.includes('未填占位')) throw new Error('漏报：' + line)
+  })
+}
+
 console.log(failures === 0 ? '\n全部通过' : `\n失败 ${failures} 项`)
 process.exit(failures === 0 ? 0 : 1)

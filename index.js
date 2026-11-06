@@ -324,7 +324,9 @@ export function apply(ctx, config = {}) {
     const cards = collect(dir, max)
     if (!cards.length) return `卡库为空：${dir}`
     const rows = cards.map(card => {
-      const filled = /待填/.test(card.raw) ? '（有未填占位）' : ''
+      // 只看样本节：卡正文里教「检查占位符」不算自己有空位。
+      const sample = (card.raw.split(/^##\s*5\.[^\n]*$/m)[1] || '')
+      const filled = /待填/.test(sample) ? '（有未填占位）' : ''
       return `${card.id}｜${card.name}｜v${card.version || '?'}｜适用：${joinOrDash(card.trigger)}｜不适用：${joinOrDash(card.expire)}${filled}\n  ${card.path}`
     })
     return `共 ${cards.length} 张卡（上限 ${max}）：\n\n${rows.join('\n')}`
