@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 身份卡 v2
  *
  * 1) 把 ~/.dsh/cards 下每张卡的摘要注入系统提示（每卡一行）；
@@ -23,7 +23,7 @@ export const inject = ['systemPrompt', 'tools']
 const CACHE_TTL_MS = 1500
 let cache = { key: '', at: 0, text: '' }
 
-const VERSION = '1.0.0'
+const VERSION = '1.0.1'
 
 /** 每次加载写一行。分 start / done 两段，才能区分「没跑」和「跑了但没拿到 tools」。 */
 function logLoad(dir, detail) {
@@ -146,7 +146,8 @@ function render(dir, max, opts = {}) {
     return (
       '## 身份卡（还没建卡）\n' +
       `卡库是空的：${dir}\n` +
-      '建一张最快的方式：把 `examples/minimal/` 整个目录拷进去，改个名字就是一张新卡；目录名即卡 id，正文写在 `card.md`。'
+      '让智能体建一张最快：`identity write id=<卡名>` 会生成骨架，填完 trigger/expire 和四节正文就行。' +
+      '也可以把仓库 `examples/minimal/` 整个目录拷进来。'
     )
   }
   const base = dir.replace(/\\/g, '/')
@@ -340,18 +341,74 @@ export function apply(ctx, config = {}) {
     return `# ${card.name}（${card.id}）\n\n注入摘要（目录里那一行）：\n${injection}\n\n全文：\n\n${card.raw}`
   }
 
+  /** 不给正文时给一份骨架——模型照着填，比让它凭空想格式可靠。 */
+  const cardSkeleton = (id, name = '') => {
+    const title = name || id
+    return [
+      '---',
+      `id: ${id}`,
+      `name: ${title}`,
+      'version: 1',
+      'order: 50',
+      'group: general',
+      'trigger: []',
+      'expire: []',
+      '---',
+      '',
+      `# ${title} · 身份卡`,
+      '',
+      '## 1. 你是谁',
+      '',
+      '一句话说清这张卡扮演什么角色。',
+      '',
+      '## 2. 任务封装',
+      '',
+      '**开工前**',
+      '',
+      '1. 说清要改什么、验收判据是什么。',
+      '',
+      '**收尾前**',
+      '',
+      '1. 给一条能复跑的证据。',
+      '',
+      '## 3. 输出要求',
+      '',
+      '**交付物**：…',
+      '',
+      '**格式**：…',
+      '',
+      '**风格**：…',
+      '',
+      '## 4. 什么时候这张卡不管用',
+      '',
+      '- …',
+      '',
+      '## 5. 样本',
+      '',
+      '- 正例：…（写路径，别复制内容）',
+      '',
+    ].join('\n')
+  }
+
   const writeAction = (id, markdown) => {
     if (!id) return '需要 id 参数'
     if (!CARD_ID.test(id)) return 'id 只能用小写字母、数字、连字符'
-    if (typeof markdown !== 'string' || !markdown.trim()) return '需要 markdown 参数（整张卡的内容）'
-    const { meta, problems } = validate(markdown)
-    if (meta?.id && meta.id !== id) problems.push(`front-matter 的 id（${meta.id}）与参数 id（${id}）不一致`)
-    if (problems.length) return `未写入，先修这些问题：\n- ${problems.join('\n- ')}`
+    const isSkeleton = !(typeof markdown === 'string' && markdown.trim())
+    const body = isSkeleton ? cardSkeleton(id) : markdown
+    // 骨架本来就带着空字段，不该被校验拦下；正式卡才校验。
+    if (!isSkeleton) {
+      const { meta, problems } = validate(body)
+      if (meta?.id && meta.id !== id) problems.push(`front-matter 的 id（${meta.id}）与参数 id（${id}）不一致`)
+      if (problems.length) return `未写入，先修这些问题：\n- ${problems.join('\n- ')}`
+    }
     try {
       mkdirSync(join(dir, id), { recursive: true })
-      writeFileSync(join(dir, id, 'card.md'), markdown, 'utf8')
+      writeFileSync(join(dir, id, 'card.md'), body, 'utf8')
       cache = { key: '', at: 0, text: '' }
-      return `已写入 ${join(dir, id, 'card.md')}`
+      const tail = isSkeleton
+        ? '\n\n骨架已落盘。`trigger` / `expire` 还空着——它们决定这张卡判不判得对，填上之后才会被认领。'
+        : ''
+      return `已写入 ${join(dir, id, 'card.md')}${tail}`
     } catch (error) {
       return `写入失败：${error.message}`
     }

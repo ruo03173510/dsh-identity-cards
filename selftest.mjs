@@ -205,6 +205,15 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
     const onDisk = readFileSync(join(sandbox, 'probe-card', 'card.md'), 'utf8')
     if (!onDisk.includes('探测卡')) throw new Error('落盘内容不对')
   })
+  const skeletonOut = await run(tool, { action: 'write', id: 'skeleton-card' })
+  check('不传正文时生成骨架', () => {
+    if (!skeletonOut.includes('已写入')) throw new Error(skeletonOut)
+    if (!skeletonOut.includes('骨架')) throw new Error('没提示这是骨架')
+    const body = readFileSync(join(sandbox, 'skeleton-card', 'card.md'), 'utf8')
+    for (const part of ['id: skeleton-card', 'trigger:', 'expire:', '## 1. 你是谁', '## 4. 什么时候这张卡不管用']) {
+      if (!body.includes(part)) throw new Error('骨架缺 ' + part)
+    }
+  })
   const afterOut = await run(tool, { action: 'list' })
   check('写完后 list 立刻能看到', () => {
     if (!afterOut.includes('probe-card')) throw new Error(afterOut)
