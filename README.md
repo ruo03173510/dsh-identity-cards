@@ -6,6 +6,22 @@
 
 上限、下限、生态位与可拓展性，见 [WHY.md](WHY.md)。
 
+## 在 DSH 的 Discover 里找到它
+
+本仓库自带 `index.json`，可以直接当索引源：
+
+```
+Plugins → Discover → 管理索引源 → 添加
+https://gitee.com/lunhuiruo/dsh-identity-cards/raw/main/index.json
+```
+
+加上之后就能在里面搜到「身份卡」。也可以跳过索引直接装：
+
+```bash
+dsh plugin add github:lunhuiruo/dsh-identity-cards   # 有 GitHub 镜像时
+dsh plugin add file:<克隆下来的目录>
+```
+
 ## 你不需要记命令，说这几句话就行
 
 装完之后，所有操作都可以用自然语言让智能体做：
