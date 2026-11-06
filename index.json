@@ -1,0 +1,76 @@
+{
+  "format": 1,
+  "title": {
+    "en": "lunhuiruo's DSH plugins",
+    "zh": "lunhuiruo 的 DSH 插件"
+  },
+  "description": {
+    "en": "DeepSeek Harness plugins by lunhuiruo. Add this file as an index source under Plugins → Discover.",
+    "zh": "lunhuiruo 开发的 DeepSeek Harness 插件。把本文件加成 Plugins → Discover 里的索引源即可浏览。"
+  },
+  "metadata": {
+    "categories": {
+      "workflow": {
+        "title": {
+          "en": "Workflow",
+          "zh": "工作流"
+        }
+      },
+      "conversation": {
+        "title": {
+          "en": "Conversation",
+          "zh": "会话"
+        }
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-identity-cards",
+      "title": {
+        "en": "Identity Cards",
+        "zh": "身份卡"
+      },
+      "description": {
+        "en": "A card deck for how the agent should work: the card index is injected every turn, one card is claimed per session, switching is declared and the old criteria void. Ships middleware cleanup and a material index.",
+        "zh": "把「AI 该按什么方式干活」做成一套卡：卡片目录每轮注入，一个会话只认一张，切卡必须声明、旧卡判据即刻作废。附带中间件清理与资料索引。"
+      },
+      "author": "lunhuiruo",
+      "homepage": "https://gitee.com/lunhuiruo/dsh-identity-cards#readme",
+      "repository": {
+        "url": "https://gitee.com/lunhuiruo/dsh-identity-cards"
+      },
+      "metadata": {
+        "category": "workflow",
+        "keywords": [
+          "identity",
+          "card",
+          "prompt",
+          "workflow",
+          "context",
+          "rules",
+          "cleanup",
+          "index"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "1.0.2",
+          "publishTimestamp": 1793950973,
+          "source": {
+            "type": "git",
+            "url": "https://gitee.com/lunhuiruo/dsh-identity-cards",
+            "commit": "9cb9816af143ecb692fb51252ef19cc7af6932ce"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1"
+          }
+        }
+      ]
+    }
+  ]
+}
