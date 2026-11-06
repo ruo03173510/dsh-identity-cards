@@ -55,6 +55,29 @@ cp -r examples/minimal ~/.dsh/cards/my-card
 
 卡库默认在 `~/.dsh/cards`，用 `config.cardsDir` 可以改。
 
+## 现成的卡（可选，默认不装）
+
+仓库里带了 5 张作者自用的卡，放在 `examples/cards/`。**装上插件不会自动启用它们**——卡片只有被放进卡库目录才会被读到。
+
+| 卡 | 管什么 |
+|---|---|
+| `lab-report` | 实验报告、课程设计、论文、docx 排版 |
+| `code` | 写代码、改代码、调试、重构 |
+| `meta` | 方案讨论、需求梳理、定规则 |
+| `review` | 独立审查：只审不改，结论分三档 |
+| `ops` | 运维助手：台账、备份、定时任务、环境维护 |
+
+想用哪张就拷哪张：
+
+```bash
+cp -r examples/cards/code ~/.dsh/cards/code
+```
+
+两点说明：
+
+- 卡里的**样本路径是作者本机的**（`D:\pythoncode\...` 之类），照着换成你自己的
+- `ops` 卡会引用 `~/.dsh/cards/ops/notes.md` 台账和 `ledger/`、`backup/` 两个目录，第一次用先建个空的
+
 ## 命令
 
 | 命令 | 做什么 |
