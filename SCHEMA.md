@@ -22,9 +22,47 @@
 | `expire` | | **什么任务不该用**（列表） |
 | `related` | | 相关的卡，`reference` 时会提示 |
 | `verify` | | 验收命令，认卡时带出 |
+| `updatedAt` | | 卡的更新时间，`audit` 用它算哪张最久没动 |
 | `budget` | | 建议的调用预算，仅提示 |
+| `res.<名字>` | | 一条资源引用，见下节 |
 
 `trigger` 和 `expire` 是最重要的两个字段：**它们决定了模型判不判得对**。写具体动词（"写代码""调试"），别写空话（"各种任务"）。
+
+## 资源引用
+
+卡只存引用，资源放别处。写法是扁平键，一个资源一行：
+
+```yaml
+res.format: shared:templates/report-format.md
+res.sample: private:samples/regression.py?tier=hot
+res.rules: project:course-graph/reports/rules/report.rules.json
+res.font: global:fonts/SourceHanSansSC.otf@sha256:3f2a9c11
+```
+
+格式：`<作用域>:<相对路径>[?tier=hot|cold][@sha256:<前 8 位以上>]`
+
+| 作用域 | 根 | 用途 |
+|---|---|---|
+| `private` | `<卡目录>/` | 跟卡走，删卡即删 |
+| `shared` | `<卡库>/@shared/` | 多卡共用的模板与规则 |
+| `project` | `@shared/projects.md` 里登记的项目根 | 项目数据，根变了只改表 |
+| `global` | `$DSH_HOME/resources/`（`config.resourcesDir` 可改） | 机器级，跨项目 |
+
+规则：
+
+- 裸名不解析，必须带作用域前缀；`..` 越界直接拒绝。
+- 资源坏了不影响卡加载——卡只读 `card.md`，引用在 `list` / `resolve` / `scan` 时才 stat。
+- `?tier=hot` 表示每次用卡都会读，缺省 `cold`。
+- `@sha256:` 可选，`scan` 时比对，不符记「内容变」并写进更新表。
+
+运维三条命令：
+
+```bash
+identity list                              # 每张卡显示「↳ N 个引用，M 个可解析」
+identity resolve id=<卡> name=<资源名>      # 这条引用解析到哪个绝对路径
+identity resources mode=scan               # 扫引用、重建 @shared/resources/index.md
+identity resources mode=status             # 看索引条数、断链、内容变
+```
 
 ## 正文五节
 

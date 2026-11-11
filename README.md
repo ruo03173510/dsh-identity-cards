@@ -111,6 +111,21 @@ cp -r examples/cards/code ~/.dsh/cards/code
 | `powerful_clean path=… notes={…}` | 强力清理：不看 `_` 前缀，没写来源说明的条目不删 |
 | `identity library mode=find query=…` | 查资料索引 |
 | `identity library mode=report item=… change=…` | 提交一条材料更新 |
+| `identity resolve id=… name=…` | 看某条资源引用解析到哪个路径 |
+| `identity resources mode=scan` | 扫引用、重建索引，漂移写进更新表 |
+| `identity resources mode=status` | 看索引条数、断链、内容变 |
+
+## 资源引用
+
+卡只存引用，样本、模板、规则源放别处，四个作用域：`private`（卡内）、`shared`（`@shared/`）、`project`（`@shared/projects.md` 登记的项目根）、`global`（`$DSH_HOME/resources/`）。
+
+```yaml
+res.format: shared:templates/report-format.md
+res.sample: private:samples/regression.py?tier=hot
+res.rules: project:course-graph/reports/rules/report.rules.json
+```
+
+加载卡只读 `card.md`，不碰资源；引用在 `list` / `resolve` / `scan` 时才 stat。断链不阻断加载，只把「N 个引用，M 个可解析」写进 `list`。详见 [SCHEMA.md](SCHEMA.md)。
 
 ## 配置
 
@@ -121,6 +136,7 @@ config:
   contract: false    # 关掉 7 条全局契约，只留卡片机制（默认 true）
   libraryDir: ...    # 资料索引目录，默认 $DSH_HOME/library
   libraryWarn: 50    # 更新表攒到多少条提醒合并
+  resourcesDir: ...  # global 资源根，默认 $DSH_HOME/resources
 ```
 
 **`contract: false` 是给别人用的开关**：全局契约里有"不写装饰线""不写首先其次"这类个人偏好，用工具不一定接受这套写法。

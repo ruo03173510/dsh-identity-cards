@@ -14,7 +14,8 @@
  * 互斥靠会话级状态（按 agent id）。任何一步出错都静默降级，绝不阻断会话。
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
 export const name = 'identity-cards'
@@ -23,7 +24,7 @@ export const inject = ['systemPrompt', 'tools']
 const CACHE_TTL_MS = 1500
 let cache = { key: '', at: 0, text: '' }
 
-const VERSION = '1.1.0'
+const VERSION = '1.2.0'
 
 /** 每次加载写一行。分 start / done 两段，才能区分「没跑」和「跑了但没拿到 tools」。 */
 function logLoad(dir, detail) {
@@ -102,6 +103,17 @@ function parseFrontMatter(text) {
   return meta
 }
 
+/** front-matter 里 res.<名字>: <引用> 的写法，扁平键是为了不动现有的行解析器。 */
+function collectRefs(meta) {
+  const out = {}
+  for (const [key, value] of Object.entries(meta)) {
+    if (!key.startsWith('res.')) continue
+    const name = key.slice(4).trim()
+    if (name) out[name] = parseRef(value)
+  }
+  return out
+}
+
 function collect(dir, max) {
   let entries
   try {
@@ -128,6 +140,8 @@ function collect(dir, max) {
         group: String(meta.group || 'general'),
         related: splitList(meta.related),
         verify: String(meta.verify || '').replace(/^["']|["']$/g, '').trim(),
+        updatedAt: String(meta.updatedAt || '').trim(),
+        resources: collectRefs(meta),
         path: file,
         raw,
       })
@@ -269,6 +283,104 @@ function protectWide(resolved) {
 /** 任何清理都不碰：版本库和依赖目录删掉就恢复不了。 */
 const CLEAN_DENY = new Set(['.git', '.hg', '.svn', 'node_modules'])
 
+/** 资源引用：<作用域>:<相对路径>[?tier=hot|cold][@sha256:xxxx] */
+const RES_SCOPES = ['private', 'shared', 'project', 'global']
+
+function parseRef(text) {
+  const raw = String(text ?? '').trim()
+  const tierAt = raw.match(/\?tier=(hot|cold)$/)
+  const tier = tierAt ? tierAt[1] : 'cold'
+  let rest = tierAt ? raw.slice(0, raw.length - tierAt[0].length) : raw
+  const shaAt = rest.match(/@sha256:([0-9a-f]{8,64})$/i)
+  const sha = shaAt ? shaAt[1].toLowerCase() : ''
+  if (shaAt) rest = rest.slice(0, rest.length - shaAt[0].length)
+  const colon = rest.indexOf(':')
+  return {
+    raw,
+    scope: colon > 0 ? rest.slice(0, colon) : '',
+    path: colon > 0 ? rest.slice(colon + 1) : rest,
+    tier,
+    sha,
+  }
+}
+
+/** 项目登记表：@shared/projects.md。名字是唯一键，根变了只改这一处。 */
+function readProjects(dir) {
+  const file = join(dir, '@shared', 'projects.md')
+  const map = new Map()
+  let text = ''
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return { file, map }
+  }
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue
+    const cells = line.split('|').slice(1, -1).map(cell => cell.trim())
+    if (cells.length < 2) continue
+    if (cells[0] === '名字' || /^[-:]+$/.test(cells[0])) continue
+    map.set(cells[0], { root: cells[1], note: cells[2] || '' })
+  }
+  return { file, map }
+}
+
+const insideOf = (base, full) => {
+  const b = resolve(base).toLowerCase()
+  const f = resolve(full).toLowerCase()
+  return f === b || f.startsWith(b.endsWith(sep) ? b : b + sep)
+}
+
+/** 解析一条引用。失败返回原因，不抛——卡加载不依赖资源是否还在。 */
+function resolveResource(ref, cardId, env) {
+  if (!RES_SCOPES.includes(ref.scope)) {
+    return { ok: false, error: `缺作用域前缀（${RES_SCOPES.join(' / ')}）：${ref.raw}` }
+  }
+  const rel = String(ref.path || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  const parts = rel.split('/').filter(Boolean)
+  if (!parts.length || parts.some(part => part === '..' || part === '.')) {
+    return { ok: false, error: `路径不合法：${ref.raw}` }
+  }
+  let base
+  let tail = parts
+  if (ref.scope === 'project') {
+    const entry = env.projects.map.get(parts[0])
+    if (!entry) return { ok: false, error: `没有登记项目 ${parts[0]}（见 ${env.projects.file}）` }
+    base = entry.root
+    tail = parts.slice(1)
+    if (!tail.length) return { ok: false, error: `项目引用缺文件路径：${ref.raw}` }
+  } else if (ref.scope === 'private') {
+    base = env.privateDir
+  } else {
+    base = env.roots[ref.scope]
+  }
+  const full = join(base, ...tail)
+  if (!insideOf(base, full)) return { ok: false, error: `引用越界：${ref.raw}` }
+  let stat
+  try {
+    stat = statSync(full)
+  } catch {
+    return { ok: false, full, error: `文件不存在：${full}` }
+  }
+  return {
+    ok: true,
+    full,
+    base,
+    dir: stat.isDirectory(),
+    size: stat.isDirectory() ? 0 : stat.size,
+    mtime: stat.mtime.toISOString(),
+  }
+}
+
+function shortHash(file) {
+  try {
+    const stat = statSync(file)
+    if (!stat.isFile() || stat.size > 1048576) return ''
+    return createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 8)
+  } catch {
+    return ''
+  }
+}
+
 const CARD_ID = /^[a-z0-9][a-z0-9-]*$/
 
 function validate(markdown) {
@@ -281,6 +393,12 @@ function validate(markdown) {
     }
     if (meta.id && !CARD_ID.test(meta.id)) problems.push('id 只能用小写字母、数字、连字符')
     if (meta.expire && splitList(meta.expire).length === 0) problems.push('expire 必须至少 1 条')
+    for (const [key, value] of Object.entries(meta)) {
+      if (!key.startsWith('res.')) continue
+      if (!RES_SCOPES.includes(parseRef(value).scope)) {
+        problems.push(`资源 ${key} 缺作用域前缀（${RES_SCOPES.join(' / ')}）`)
+      }
+    }
   }
   const sections = [...markdown.matchAll(/^##\s+/gm)].length
   if (sections < 4) problems.push(`正文只有 ${sections} 段，规范要求 5 段`)
@@ -345,7 +463,9 @@ export function apply(ctx, config = {}) {
       // 只看样本节：卡正文里教「检查占位符」不算自己有空位。
       const sample = (card.raw.split(/^##\s*5\.[^\n]*$/m)[1] || '')
       const filled = /待填/.test(sample) ? '（有未填占位）' : ''
-      return `${card.id}｜${card.name}｜v${card.version || '?'}｜适用：${joinOrDash(card.trigger)}｜不适用：${joinOrDash(card.expire)}${filled}\n  ${card.path}`
+      const state = Object.keys(card.resources).length ? resourceState(card) : null
+      const resLine = state ? `\n  ↳ ${state.total} 个引用，${state.ok} 个可解析` : ''
+      return `${card.id}｜${card.name}｜v${card.version || '?'}｜适用：${joinOrDash(card.trigger)}｜不适用：${joinOrDash(card.expire)}${filled}\n  ${card.path}${resLine}`
     })
     return `共 ${cards.length} 张卡（上限 ${max}）：\n\n${rows.join('\n')}`
   }
@@ -654,6 +774,101 @@ export function apply(ctx, config = {}) {
     return `已记录：${item}｜${change}${tail}`
   }
 
+  /** 全局资源根。卡只存引用，这里才是「去哪找」的最后一跳。 */
+  const resourcesRoot =
+    typeof config?.resourcesDir === 'string' && config.resourcesDir
+      ? resolve(config.resourcesDir)
+      : join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'resources')
+
+  const envFor = cardId => ({
+    privateDir: join(dir, cardId),
+    roots: { shared: join(dir, '@shared'), global: resourcesRoot },
+    projects: readProjects(dir),
+  })
+
+  const indexFile = () => join(dir, '@shared', 'resources', 'index.md')
+
+  const resourceState = card => {
+    const env = envFor(card.id)
+    const names = Object.keys(card.resources)
+    const ok = names.filter(name => resolveResource(card.resources[name], card.id, env).ok).length
+    return { total: names.length, ok }
+  }
+
+  const resolveAction = (id, name) => {
+    if (!id) return '需要 id 参数：哪张卡'
+    if (!name) return '需要 name 参数：资源名（卡里 res.<名字> 的那一段）'
+    const card = collect(dir, max).find(item => item.id === id)
+    if (!card) return `没有这张卡：${id}`
+    const names = Object.keys(card.resources)
+    if (!names.length) return `${id} 没有声明资源。写法：front-matter 里 res.format: shared:templates/x.md`
+    const ref = card.resources[name]
+    if (!ref) return `${id} 没有资源 ${name}。现有：${names.join('、')}`
+    const result = resolveResource(ref, id, envFor(id))
+    if (!result.ok) return `解析失败：${result.error}`
+    return [
+      `${id} / ${name}`,
+      `  引用：${ref.raw}（tier=${ref.tier}）`,
+      `  路径：${result.full}${result.dir ? '（目录）' : ''}`,
+      `  ${result.dir ? '目录' : `大小 ${formatSize(result.size)}`}｜mtime ${result.mtime}`,
+    ].join('\n')
+  }
+
+  const resourcesAction = (exec, mode, onlyId) => {
+    if (mode === 'status') {
+      let text = ''
+      try {
+        text = readFileSync(indexFile(), 'utf8')
+      } catch {
+        return `还没有索引表：${indexFile()}\n先跑 identity resources mode=scan`
+      }
+      const rows = text.split(/\r?\n/).filter(line => {
+        const trimmed = line.trim()
+        return trimmed.startsWith('|') && !/^\|\s*卡/.test(trimmed) && !/^\|[-:\s|]+$/.test(trimmed)
+      })
+      const broken = rows.filter(line => line.includes('断链')).length
+      const changed = rows.filter(line => line.includes('内容变')).length
+      return `索引 ${rows.length} 条｜正常 ${rows.length - broken - changed}｜断链 ${broken}｜内容变 ${changed}\n表：${indexFile()}`
+    }
+    const cards = onlyId ? collect(dir, max).filter(card => card.id === onlyId) : collect(dir, max)
+    if (!cards.length) return onlyId ? `没有这张卡：${onlyId}` : `卡库为空：${dir}`
+    const lines = ['| 卡 | 资源 | 引用 | 路径 | 大小 | mtime | sha8 | 状态 |', '|---|---|---|---|---|---|---|---|']
+    const drift = []
+    let ok = 0
+    let broken = 0
+    for (const card of cards) {
+      const env = envFor(card.id)
+      for (const [name, ref] of Object.entries(card.resources)) {
+        const result = resolveResource(ref, card.id, env)
+        if (!result.ok) {
+          broken += 1
+          drift.push(`${card.id}/${name}：${result.error}`)
+          lines.push(`| ${card.id} | ${name} | ${ref.raw} | — | — | — | — | 断链 |`)
+          continue
+        }
+        ok += 1
+        const hash = result.dir ? '' : shortHash(result.full)
+        const changed = Boolean(ref.sha && hash && hash !== ref.sha)
+        if (changed) drift.push(`${card.id}/${name}：内容变了（记 ${ref.sha}，现 ${hash}）`)
+        lines.push(
+          `| ${card.id} | ${name} | ${ref.raw} | ${result.full} | ${formatSize(result.size)} | ${result.mtime} | ${hash || '—'} | ${changed ? '内容变' : '正常'} |`,
+        )
+      }
+    }
+    try {
+      mkdirSync(join(dir, '@shared', 'resources'), { recursive: true })
+      writeFileSync(indexFile(), `${lines.join('\n')}\n`, 'utf8')
+    } catch (error) {
+      return `写索引失败：${error?.message ?? error}`
+    }
+    for (const item of drift) {
+      const at = item.indexOf('：')
+      libraryReport(exec, at > 0 ? item.slice(0, at) : item, '引用漂移', item)
+    }
+    const tail = drift.length ? `\n漂移 ${drift.length} 条，已写进更新表：\n- ${drift.join('\n- ')}` : ''
+    return `扫了 ${cards.length} 张卡：引用 ${ok + broken} 条，正常 ${ok}，断链 ${broken}。\n索引：${indexFile()}${tail}`
+  }
+
   /** 读目录条目并统计体积，clean 与 powerful_clean 共用。 */
   const scanEntries = resolved =>
     readdirSync(resolved, { withFileTypes: true }).map(entry => {
@@ -909,18 +1124,19 @@ export function apply(ctx, config = {}) {
   const definition = {
     name: 'identity',
     description:
-      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 扫描 `_` 开头的中间件、弹窗确认后删除并逐项说明来源与用途（不符合 `_` 规范的条目要用 powerful_clean 工具，且只在使用者明确要求时用）；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）。',
+      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 扫描 `_` 开头的中间件、弹窗确认后删除并逐项说明来源与用途（不符合 `_` 规范的条目要用 powerful_clean 工具，且只在使用者明确要求时用）；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）；resolve 看某条资源解析到哪（id + name，四个作用域 private/shared/project/global）；resources mode=scan 扫引用、重建索引并把漂移写进更新表，mode=status 看汇总。',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['use', 'switch', 'current', 'release', 'list', 'show', 'manual', 'reference', 'write', 'audit', 'doctor', 'clean', 'library'],
+          enum: ['use', 'switch', 'current', 'release', 'list', 'show', 'manual', 'reference', 'write', 'audit', 'doctor', 'clean', 'library', 'resolve', 'resources'],
         },
         id: { type: 'string', description: '卡 id（use / show / write / release 用）' },
         path: { type: 'string', description: 'clean 用：要扫描中间件的目录' },
         auto: { type: 'boolean', description: 'switch 用：true = 不弹窗直接切（前两次有效，第三次起仍会问你）' },
-        mode: { type: 'string', enum: ['find', 'report'], description: 'library 用：find 查索引，report 提交更新' },
+        mode: { type: 'string', enum: ['find', 'report', 'scan', 'status'], description: 'library 用 find / report；resources 用 scan / status' },
+        name: { type: 'string', description: 'resolve 用：资源名（front-matter 里 res.<名字> 的那一段）' },
         query: { type: 'string', description: 'library find 的关键词（项目名 / 实验名 / 文件名）' },
         item: { type: 'string', description: 'library report 的材料名或路径' },
         change: { type: 'string', description: 'library report 的变更类型：新建 / 移动 / 改名 / 删除 / 内容大改 / 路径失效' },
@@ -961,6 +1177,8 @@ export function apply(ctx, config = {}) {
           if (args?.mode === 'report') return libraryReport(exec, args?.item, args?.change, args?.note)
           return libraryFind(args?.query)
         }
+        if (action === 'resolve') return resolveAction(args?.id, args?.name)
+        if (action === 'resources') return resourcesAction(exec, args?.mode === 'status' ? 'status' : 'scan', args?.id)
         return `未知 action：${action}`
       } catch (error) {
         return `执行失败：${error?.message ?? error}`

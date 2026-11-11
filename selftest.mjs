@@ -50,7 +50,7 @@ verify: "python check.py"
 - 待填。
 `
 
-function makeHarness({ withTools = true, cardsDir = CARDS, userQuestions, libraryDir, libraryWarn, contract } = {}) {
+function makeHarness({ withTools = true, cardsDir = CARDS, userQuestions, libraryDir, libraryWarn, contract, resourcesDir } = {}) {
   const captured = { section: null, tool: null, tools: {} }
   const ctx = {
     effect(fn) {
@@ -88,6 +88,7 @@ function makeHarness({ withTools = true, cardsDir = CARDS, userQuestions, librar
     ...(libraryDir ? { libraryDir } : {}),
     ...(Number.isFinite(libraryWarn) ? { libraryWarn } : {}),
     ...(contract === false ? { contract: false } : {}),
+    ...(resourcesDir ? { resourcesDir } : {}),
   })
   return captured
 }
@@ -512,6 +513,108 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
     if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('取消了还删')
   })
   rmSync(sandbox, { recursive: true, force: true })
+}
+
+// 资源引用：四个作用域、断链、越界、索引与漂移
+{
+  const root = mkdtempSync(join(tmpdir(), 'res-'))
+  const cards = join(root, 'cards')
+  const cardDir = join(cards, 'probe')
+  mkdirSync(join(cardDir, 'samples'), { recursive: true })
+  writeFileSync(join(cardDir, 'samples', 'a.py'), 'print(1)')
+  mkdirSync(join(cards, '@shared', 'templates'), { recursive: true })
+  writeFileSync(join(cards, '@shared', 'templates', 'fmt.md'), '# 格式')
+  mkdirSync(join(root, 'proj'), { recursive: true })
+  writeFileSync(join(root, 'proj', 'rules.json'), '{}')
+  writeFileSync(join(cards, '@shared', 'projects.md'), `| 名字 | 根 | 备注 |\n|---|---|---|\n| demo | ${join(root, 'proj')} | 测试 |\n`)
+  mkdirSync(join(root, 'global'), { recursive: true })
+  writeFileSync(join(root, 'global', 'font.txt'), 'x')
+  writeFileSync(
+    join(cardDir, 'card.md'),
+    `---
+id: probe
+name: 探针
+version: 1
+trigger: [探针]
+expire: [真实任务]
+res.format: shared:templates/fmt.md
+res.sample: private:samples/a.py?tier=hot
+res.rules: project:demo/rules.json
+res.g: global:font.txt
+res.missing: private:samples/nope.py
+res.noscope: samples/x.py
+res.traverse: private:../escape.txt
+---
+
+## 1. 你是谁
+x
+
+## 2. 任务封装
+x
+
+## 3. 输出要求
+x
+
+## 4. 什么时候这张卡不管用
+x
+
+## 5. 样本
+x
+`,
+  )
+  const lib = join(root, 'library')
+  const { tool } = makeHarness({ cardsDir: cards, libraryDir: lib, resourcesDir: join(root, 'global') })
+  const call = (args, e = { agent: { id: 'r1' } }) => Promise.resolve(tool.execute(args, e)).then(String)
+
+  const shared = await call({ action: 'resolve', id: 'probe', name: 'format' })
+  check('resolve 把 shared 解析到绝对路径', () => {
+    if (!shared.includes('fmt.md')) throw new Error(shared)
+    if (!shared.includes('tier=cold')) throw new Error('缺 tier')
+  })
+  const hot = await call({ action: 'resolve', id: 'probe', name: 'sample' })
+  check('?tier=hot 被解析出来', () => {
+    if (!hot.includes('tier=hot')) throw new Error(hot)
+  })
+  const project = await call({ action: 'resolve', id: 'probe', name: 'rules' })
+  check('project 作用域走登记表', () => {
+    if (!project.includes('rules.json')) throw new Error(project)
+  })
+  const missing = await call({ action: 'resolve', id: 'probe', name: 'missing' })
+  check('断链时报出完整路径', () => {
+    if (!missing.includes('文件不存在')) throw new Error(missing)
+  })
+  const noscope = await call({ action: 'resolve', id: 'probe', name: 'noscope' })
+  check('缺作用域前缀直接拒绝', () => {
+    if (!noscope.includes('缺作用域前缀')) throw new Error(noscope)
+  })
+  const traverse = await call({ action: 'resolve', id: 'probe', name: 'traverse' })
+  check('.. 越界被拒绝', () => {
+    if (!traverse.includes('路径不合法')) throw new Error(traverse)
+  })
+  const unknown = await call({ action: 'resolve', id: 'probe', name: 'nope' })
+  check('未知资源名时列出已有的', () => {
+    if (!unknown.includes('现有：')) throw new Error(unknown)
+  })
+  const listed = await call({ action: 'list' })
+  check('list 标出引用条数与可解析数', () => {
+    if (!listed.includes('↳ 7 个引用，4 个可解析')) throw new Error(listed)
+  })
+  const scan = await call({ action: 'resources', mode: 'scan' })
+  check('scan 写索引并统计断链', () => {
+    if (!scan.includes('断链 3')) throw new Error(scan)
+    if (!existsSync(join(cards, '@shared', 'resources', 'index.md'))) throw new Error('没写索引')
+  })
+  check('漂移写进更新表', () => {
+    const updates = readFileSync(join(lib, 'updates.md'), 'utf8')
+    if (!updates.includes('引用漂移')) throw new Error(updates)
+    if (!updates.includes('probe/missing')) throw new Error(updates)
+  })
+  const status = await call({ action: 'resources', mode: 'status' })
+  check('status 汇总索引与断链', () => {
+    if (!status.includes('索引 7 条')) throw new Error(status)
+    if (!status.includes('断链 3')) throw new Error(status)
+  })
+  rmSync(root, { recursive: true, force: true })
 }
 
 // switch：有确认才换；取消就保持不变
