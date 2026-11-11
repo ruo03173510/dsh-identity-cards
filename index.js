@@ -140,6 +140,7 @@ function collect(dir, max) {
         group: String(meta.group || 'general'),
         related: splitList(meta.related),
         verify: String(meta.verify || '').replace(/^["']|["']$/g, '').trim(),
+        handoff: splitList(meta.handoff),
         updatedAt: String(meta.updatedAt || '').trim(),
         resources: collectRefs(meta),
         path: file,
@@ -572,7 +573,10 @@ export function apply(ctx, config = {}) {
     `按第 2 节（任务封装）执行；任务变了用 identity switch <id>（会先问你）。\n\n` +
     `协作：related = ${card.related.length ? card.related.join('、') : '无'}（只读参考，永不自动注入）。\n` +
     `判据冲突时以本卡为准，并在输出里注明「按 X 卡」。\n\n` +
-    (effective ? `验收命令：${effective}（收尾前必须跑，命中即失败）` : '验收：本卡没有验收命令，判据只能靠自觉。')
+    (effective ? `验收命令：${effective}（收尾前必须跑，命中即失败）` : '验收：本卡没有验收命令，判据只能靠自觉。') +
+    (card.handoff.length
+      ? `\n\n交接：这次任务收尾后如果要独立审查，用 identity switch ${card.handoff.join(' / ')}（会先问你）；把本次产物路径一并带过去，别让它重读你的思路。`
+      : '')
 
   /** 默认卡 → 具体卡：自动，只告知。 */
   const useAction = (exec, id, verify) => {

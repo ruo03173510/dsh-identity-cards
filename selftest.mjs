@@ -617,6 +617,28 @@ x
   rmSync(root, { recursive: true, force: true })
 }
 
+// handoff：认卡后把交接目标带出来，没写就不提
+{
+  const sandbox = mkdtempSync(join(tmpdir(), 'handoff-'))
+  const body = sections =>
+    `---\nid: dev\nname: 开发\nversion: 1\ntrigger: [写代码]\nexpire: [写文档]\n${sections}\n---\n\n## 1. 你是谁\nx\n\n## 2. 任务封装\nx\n\n## 3. 输出要求\nx\n\n## 4. 什么时候这张卡不管用\nx\n\n## 5. 样本\nx\n`
+  mkdirSync(join(sandbox, 'dev'), { recursive: true })
+  mkdirSync(join(sandbox, 'plain'), { recursive: true })
+  writeFileSync(join(sandbox, 'dev', 'card.md'), body('handoff: [review]'))
+  writeFileSync(join(sandbox, 'plain', 'card.md'), body(''))
+  const { tool } = makeHarness({ cardsDir: sandbox })
+  const withHandoff = String(await tool.execute({ action: 'use', id: 'dev' }, { agent: { id: 'handoff-1' } }))
+  check('handoff 认卡后带出交接目标', () => {
+    if (!withHandoff.includes('交接：')) throw new Error(withHandoff.slice(-300))
+    if (!withHandoff.includes('review')) throw new Error('没有交接目标')
+  })
+  const without = String(await tool.execute({ action: 'use', id: 'plain' }, { agent: { id: 'handoff-2' } }))
+  check('没写 handoff 时不提交接', () => {
+    if (without.includes('交接：')) throw new Error(without.slice(-200))
+  })
+  rmSync(sandbox, { recursive: true, force: true })
+}
+
 // switch：有确认才换；取消就保持不变
 {
   const answers = []
