@@ -24,7 +24,7 @@ export const inject = ['systemPrompt', 'tools']
 const CACHE_TTL_MS = 1500
 let cache = { key: '', at: 0, text: '' }
 
-const VERSION = '1.2.0'
+const VERSION = '1.3.0'
 
 /** 每次加载写一行。分 start / done 两段，才能区分「没跑」和「跑了但没拿到 tools」。 */
 function logLoad(dir, detail) {

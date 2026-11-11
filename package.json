@@ -1,6 +1,6 @@
 {
   "name": "dsh-identity-cards",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "身份卡：给 DSH 加一套「开工前先认卡」的机制——卡片目录每轮注入、一次只认一张、可自动切换；附带中间件清理、资料索引与资源引用。",
   "type": "module",
   "main": "index.js",
