@@ -14,7 +14,7 @@
  * 互斥靠会话级状态（按 agent id）。任何一步出错都静默降级，绝不阻断会话。
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 export const name = 'identity-cards'
@@ -23,7 +23,7 @@ export const inject = ['systemPrompt', 'tools']
 const CACHE_TTL_MS = 1500
 let cache = { key: '', at: 0, text: '' }
 
-const VERSION = '1.0.2'
+const VERSION = '1.1.0'
 
 /** 每次加载写一行。分 start / done 两段，才能区分「没跑」和「跑了但没拿到 tools」。 */
 function logLoad(dir, detail) {
@@ -251,8 +251,23 @@ function protectPath(target) {
   for (const guard of guards) {
     if (resolve(guard).toLowerCase() === resolved) return `拒绝：${target} 是关键目录`
   }
+  if (/^[a-z]:\\?$/i.test(resolved)) return `拒绝：${target} 是盘符根目录`
   return ''
 }
+
+/** 强力清理的额外护栏：不许扫到用户主目录、DSH_HOME 的上一级去（那样会一口吞掉整个家目录）。 */
+function protectWide(resolved) {
+  for (const base of [homedir(), process.env.DSH_HOME || join(homedir(), '.dsh')].map(item => resolve(item))) {
+    const rel = relative(resolved, base)
+    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
+      return `拒绝：${resolved} 是 ${base} 的上一级目录，强力清理不往这里扫`
+    }
+  }
+  return ''
+}
+
+/** 任何清理都不碰：版本库和依赖目录删掉就恢复不了。 */
+const CLEAN_DENY = new Set(['.git', '.hg', '.svn', 'node_modules'])
 
 const CARD_ID = /^[a-z0-9][a-z0-9-]*$/
 
@@ -320,6 +335,8 @@ export function apply(ctx, config = {}) {
     logLoad(dir, 'tools-missing')
     return
   }
+
+  const registeredNames = []
 
   const listAction = () => {
     const cards = collect(dir, max)
@@ -637,32 +654,28 @@ export function apply(ctx, config = {}) {
     return `已记录：${item}｜${change}${tail}`
   }
 
-  const cleanAction = async (exec, target, notes = {}) => {
-    if (!target) return '需要 path 参数：要扫描的目录'
-    const resolved = resolve(target)
-    const guard = protectPath(resolved)
-    if (guard) return guard
-    let entries
-    try {
-      entries = readdirSync(resolved, { withFileTypes: true })
-    } catch (error) {
-      return `读不了目录：${error?.message ?? error}`
-    }
-    const hits = []
-    for (const entry of entries) {
-      if (!entry.name.startsWith('_')) continue
+  /** 读目录条目并统计体积，clean 与 powerful_clean 共用。 */
+  const scanEntries = resolved =>
+    readdirSync(resolved, { withFileTypes: true }).map(entry => {
       const full = join(resolved, entry.name)
       const { total, files } = dirSize(full)
-      hits.push({ name: entry.name, full, dir: entry.isDirectory(), files, total })
-    }
-    if (!hits.length) return `${resolved}：没有 \`_\` 开头的中间件。`
+      return { name: entry.name, full, dir: entry.isDirectory(), files, total }
+    })
+
+  /** 列清单、弹确认、删。两个清理工具共用，区别只在 hits 怎么来的。 */
+  const removeWithConfirm = async (exec, plan) => {
+    const { askId, header, title, question, deleteLabel, hits, extra = [] } = plan
     const sum = hits.reduce((acc, hit) => acc + hit.total, 0)
     const list = hits.map(hit => {
       const where = `${hit.full}${hit.dir ? '\\' : ''}（${hit.files} 文件，${formatSize(hit.total)}）`
-      const note = notes[hit.name] || describeName(hit.name) || '来源未标注（`_` 前缀中间件，请确认是不是本次生成、只服务于产物的文件）'
-      return `${where}\n    来源与用途：${note}`
+      return `${where}\n    来源与用途：${hit.note}`
     })
-    const preview = `扫描 ${resolved}：\n- ${list.join('\n- ')}\n合计 ${hits.length} 项，${formatSize(sum)}`
+    const lines = [title]
+    if (hits.length) lines.push(`- ${list.join('\n- ')}`, `合计 ${hits.length} 项，${formatSize(sum)}`)
+    else lines.push('没有条目被列入删除清单。')
+    lines.push(...extra)
+    const preview = lines.join('\n')
+    if (!hits.length) return `${preview}\n\n未删除：清单是空的。`
 
     const questions = typeof ctx.get === 'function' ? ctx.get('userQuestions') : undefined
     if (!questions || typeof questions.ask !== 'function') {
@@ -674,12 +687,12 @@ export function apply(ctx, config = {}) {
         agent: exec?.agent,
         questions: [
           {
-            id: 'clean',
-            header: '清理中间件',
-            question: `确认删除 ${hits.length} 项？共 ${formatSize(sum)}`,
+            id: askId,
+            header,
+            question,
             detail: list.join('\n'),
             options: [
-              { label: '全部删除', description: '删掉上面列出的全部 _ 开头条目' },
+              { label: deleteLabel, description: '删掉上面列出的条目，不可恢复' },
               { label: '取消', description: '什么都不删' },
             ],
           },
@@ -689,7 +702,7 @@ export function apply(ctx, config = {}) {
       return `${preview}\n\n未删除：确认弹窗失败——${error?.message ?? error}`
     }
     const selected = answer?.answers?.[0]?.selected ?? []
-    if (!selected.includes('全部删除')) return `${preview}\n\n你选择了取消，未删除。`
+    if (!selected.includes(deleteLabel)) return `${preview}\n\n你选择了取消，未删除。`
 
     const removed = []
     const failed = []
@@ -703,6 +716,96 @@ export function apply(ctx, config = {}) {
     }
     const done = `已删除 ${removed.length} 项，释放约 ${formatSize(sum)}。`
     return failed.length ? `${done}\n失败 ${failed.length} 项：\n- ${failed.join('\n- ')}` : done
+  }
+
+  const cleanAction = async (exec, target, notes = {}) => {
+    if (!target) return '需要 path 参数：要扫描的目录'
+    const resolved = resolve(target)
+    const guard = protectPath(resolved)
+    if (guard) return guard
+    let all
+    try {
+      all = scanEntries(resolved)
+    } catch (error) {
+      return `读不了目录：${error?.message ?? error}`
+    }
+    const hits = all
+      .filter(entry => entry.name.startsWith('_'))
+      .map(hit => ({
+        ...hit,
+        note:
+          notes[hit.name] ||
+          describeName(hit.name) ||
+          '来源未标注（`_` 前缀中间件，请确认是不是本次生成、只服务于产物的文件）',
+      }))
+    if (!hits.length) return `${resolved}：没有 \`_\` 开头的中间件。`
+    const sum = hits.reduce((acc, hit) => acc + hit.total, 0)
+    return removeWithConfirm(exec, {
+      askId: 'clean',
+      header: '清理中间件',
+      title: `扫描 ${resolved}：`,
+      question: `确认删除 ${hits.length} 项？共 ${formatSize(sum)}`,
+      deleteLabel: '全部删除',
+      hits,
+    })
+  }
+
+  /**
+   * 强力清理：不受 `_` 前缀限制，代价是每项必须由调用方写清来源与用途，没写的不进清单。
+   * 只在使用者本轮明确点名用它时才该被调用，见工具描述。
+   */
+  const powerfulCleanAction = async (exec, target, notes = {}, items = []) => {
+    if (!target) return '需要 path 参数：要扫描的目录'
+    const resolved = resolve(target)
+    const guard = protectPath(resolved) || protectWide(resolved)
+    if (guard) return guard
+    let all
+    try {
+      all = scanEntries(resolved)
+    } catch (error) {
+      return `读不了目录：${error?.message ?? error}`
+    }
+    const wanted = [...new Set((Array.isArray(items) ? items : []).map(item => String(item).trim()).filter(Boolean))]
+    const pool = all.filter(entry => !CLEAN_DENY.has(entry.name))
+    const missing = []
+    let candidates = pool
+    if (wanted.length) {
+      const byName = new Map(pool.map(entry => [entry.name, entry]))
+      candidates = wanted.map(item => byName.get(item)).filter(Boolean)
+      for (const item of wanted) if (!byName.has(item)) missing.push(item)
+      if (!candidates.length) {
+        return `没有可清理的条目：${missing.join('、')}（${resolved} 下找不到，或属于版本库 / node_modules）`
+      }
+    }
+    if (candidates.length > 40 && !wanted.length) {
+      return `${resolved}：扫出 ${candidates.length} 个条目，超过一次 40 个的上限。收窄到子目录，或用 items 点名。`
+    }
+    const hits = []
+    const skipped = []
+    for (const entry of candidates) {
+      const note = typeof notes?.[entry.name] === 'string' ? notes[entry.name].trim() : ''
+      if (note) hits.push({ ...entry, note })
+      else skipped.push(entry)
+    }
+    const extra = []
+    if (skipped.length) {
+      extra.push('未列入（缺来源说明，补 notes 后才会进清单）：')
+      for (const entry of skipped) {
+        const hint = describeName(entry.name)
+        extra.push(`- ${entry.name}${hint ? `（名字像：${hint}）` : ''}`)
+      }
+    }
+    if (missing.length) extra.push(`找不到：${missing.join('、')}`)
+    const sum = hits.reduce((acc, hit) => acc + hit.total, 0)
+    return removeWithConfirm(exec, {
+      askId: 'powerful-clean',
+      header: '强力清理',
+      title: `扫描 ${resolved}（不受 \`_\` 前缀限制）：`,
+      question: hits.length ? `确认删除 ${hits.length} 项？共 ${formatSize(sum)}，不可恢复` : '没有可删的条目，未删除',
+      deleteLabel: `删除以上 ${hits.length} 项`,
+      hits,
+      extra,
+    })
   }
 
   const manualAction = (group) => {
@@ -791,7 +894,7 @@ export function apply(ctx, config = {}) {
       `卡目录：${dir}`,
       `卡：${cards.length} 张（上限 ${max}）`,
       `当前身份：${claim ? `${claim.id}（认领于 ${claim.at}）` : '无卡态'}`,
-      `工具：identity ${typeof tools?.register === 'function' ? '已注册' : '未注册'}`,
+      `工具：${registeredNames.length ? registeredNames.join(' / ') : '未注册'}`,
     ]
     try {
       const rows = readFileSync(join(dir, '.plugin.log'), 'utf8').trim().split('\n').filter(Boolean)
@@ -806,7 +909,7 @@ export function apply(ctx, config = {}) {
   const definition = {
     name: 'identity',
     description:
-      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 扫描 `_` 开头的中间件、弹窗确认后删除并逐项说明来源与用途；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）。',
+      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 扫描 `_` 开头的中间件、弹窗确认后删除并逐项说明来源与用途（不符合 `_` 规范的条目要用 powerful_clean 工具，且只在使用者明确要求时用）；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）。',
     parameters: {
       type: 'object',
       properties: {
@@ -865,19 +968,58 @@ export function apply(ctx, config = {}) {
     },
   }
 
-  let registered = 0
-  try {
-    const disposer = tools.register(definition)
-    registered = 1
-    if (typeof disposer === 'function' && typeof ctx.effect === 'function') {
+  const powerfulDefinition = {
+    name: 'powerful_clean',
+    description:
+      '强力清理：只有使用者本轮明确要求「用 powerful_clean 清」时才调用，别自己判断后调用。和 clean 的区别是不看 `_` 前缀，普通名字的中间件也能列进来；代价是每项必须由你在 notes 里写明来源与用途，没写的不进删除清单。先列清单再弹窗确认，确认后才删。版本库目录（.git / .hg / .svn）与 node_modules 一律跳过；盘符根、用户主目录、DSH_HOME 及其上一级直接拒绝；一次最多处理 40 个条目。传 items 可只处理点名的条目。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '要扫描的目录，只处理该目录下的第一层条目' },
+        notes: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            '必写：逐项说明来源与用途，键为条目名（如 {"debug.log":"本次调试输出，产物不依赖"}）。没写说明的条目不进删除清单',
+        },
+        items: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '可选：只处理点名的条目（目录下第一层的名字）',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (args, value) => [{ type: 'text', text: String(value ?? '') }],
+    },
+    async execute(args, exec) {
       try {
-        ctx.effect(() => disposer)
-      } catch {
-        /* ignore */
+        return await powerfulCleanAction(exec, args?.path, args?.notes, args?.items)
+      } catch (error) {
+        return `执行失败：${error?.message ?? error}`
       }
+    },
+  }
+
+  let registered = 0
+  for (const def of [definition, powerfulDefinition]) {
+    try {
+      const disposer = tools.register(def)
+      registered += 1
+      registeredNames.push(def.name)
+      if (typeof disposer === 'function' && typeof ctx.effect === 'function') {
+        try {
+          ctx.effect(() => disposer)
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* 单个工具注册失败不影响另一个 */
     }
-  } catch {
-    /* 工具注册失败不影响卡片注入 */
   }
   logLoad(dir, `done tools=${registered}`)
 }

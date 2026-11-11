@@ -47,6 +47,7 @@ dsh plugin add file:<克隆下来的目录>
 | **互斥** | 一个会话只有一个身份，换卡必须声明 |
 | **契约** | 一份跨卡的全局规则，可关 |
 | **clean** | 扫出 `_` 开头的中间件，弹窗确认后删，逐项说明来源 |
+| **powerful_clean** | 你点名才用：不看 `_` 前缀，但每项必须写明来源，仍要确认 |
 | **library** | 资料索引：记路径、查路径、报更新；不扫盘就能找东西 |
 
 ## 安装
@@ -107,6 +108,7 @@ cp -r examples/cards/code ~/.dsh/cards/code
 | `identity audit` | 每张卡占多少字符、全局提示多大 |
 | `identity doctor` | 自检：版本、卡解析、当前身份、加载记录 |
 | `identity clean <dir>` | 扫中间件，确认后删，逐项说明来源 |
+| `powerful_clean path=… notes={…}` | 强力清理：不看 `_` 前缀，没写来源说明的条目不删 |
 | `identity library mode=find query=…` | 查资料索引 |
 | `identity library mode=report item=… change=…` | 提交一条材料更新 |
 
@@ -127,7 +129,7 @@ config:
 
 1. **注入不可撤销**：卡全文进了上下文就一直在，切换只能"宣布作废"，删不掉。这是 DSH 会话机制的硬约束。
 2. **`file:` 依赖是复制不是链接**：改了源码要重装才生效。
-3. **没有钩子**：卡的约束是提示词级别的，不像安全底线那样能拦截操作。
+3. **没有钩子**：卡的约束是提示词级别的，不像安全底线那样能拦截操作。`powerful_clean` 的「只有你点名才用」同样只写在工具描述里，硬闸是删除前的确认弹窗。
 4. **只在 DSH 里能用**：依赖 Cordis 的 `systemPrompt` / `tools` / `userQuestions`。卡的内容本身是纯 markdown，别的 agent 可以直接当规范读。
 
 ## 自测
@@ -136,7 +138,7 @@ config:
 node selftest.mjs
 ```
 
-不需要装 DSH，自带一个最小 harness。当前覆盖：卡解析、认卡、互斥、自动切卡上限、持久化、clean 确认、library 查询与提交、契约开关、空卡库降级。
+不需要装 DSH，自带一个最小 harness。当前覆盖：卡解析、认卡、互斥、自动切卡上限、持久化、clean 确认、powerful_clean 的来源说明闸与确认、library 查询与提交、契约开关、空卡库降级。
 
 ## 目录
 

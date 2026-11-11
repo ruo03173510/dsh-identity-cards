@@ -51,7 +51,7 @@ verify: "python check.py"
 `
 
 function makeHarness({ withTools = true, cardsDir = CARDS, userQuestions, libraryDir, libraryWarn, contract } = {}) {
-  const captured = { section: null, tool: null }
+  const captured = { section: null, tool: null, tools: {} }
   const ctx = {
     effect(fn) {
       const dispose = fn()
@@ -75,7 +75,8 @@ function makeHarness({ withTools = true, cardsDir = CARDS, userQuestions, librar
   if (withTools) {
     ctx.tools = {
       register(definition) {
-        captured.tool = definition
+        captured.tools[definition.name] = definition
+        if (!captured.tool) captured.tool = definition
         return () => {}
       },
     }
@@ -438,6 +439,78 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
     if (!hintedOut.includes('渲染出来的页面')) throw new Error(hintedOut)
   })
   rmSync(hinted, { recursive: true, force: true })
+  rmSync(sandbox, { recursive: true, force: true })
+}
+
+// powerful_clean：不看 `_` 前缀，但每项必须有来源说明，且必须确认
+{
+  const sandbox = mkdtempSync(join(tmpdir(), 'powerful-clean-'))
+  writeFileSync(join(sandbox, 'debug.log'), 'x')
+  writeFileSync(join(sandbox, 'keep.txt'), 'y')
+  mkdirSync(join(sandbox, '.git'), { recursive: true })
+  let cancelNext = false
+  const asked = []
+  const fake = {
+    async ask(request) {
+      const q = request.questions[0]
+      asked.push(q)
+      return { answers: [{ id: q.id, selected: [cancelNext ? q.options[1].label : q.options[0].label] }] }
+    },
+  }
+  const { tools } = makeHarness({ cardsDir: sandbox, userQuestions: fake })
+  const pc = tools.powerful_clean
+  const call = (args, e = { agent: { id: 'p1' } }) => Promise.resolve(pc.execute(args, e)).then(String)
+
+  check('powerful_clean 与 identity 同时注册', () => {
+    if (!pc) throw new Error('没注册 powerful_clean')
+    if (!tools.identity) throw new Error('identity 没了')
+  })
+  const noPath = await call({})
+  check('powerful_clean 缺 path 时报错', () => {
+    if (!noPath.includes('需要 path 参数')) throw new Error(noPath)
+  })
+  const guarded = await call({ path: homedir() })
+  check('powerful_clean 拒绝主目录', () => {
+    if (!guarded.includes('拒绝')) throw new Error(guarded)
+  })
+  const guardedUp = await call({ path: join(homedir(), '..') })
+  check('powerful_clean 拒绝主目录的上一级', () => {
+    if (!guardedUp.includes('拒绝')) throw new Error(guardedUp)
+  })
+  const bare = await call({ path: sandbox })
+  check('没写来源说明就只列不进清单', () => {
+    if (!bare.includes('debug.log')) throw new Error(bare)
+    if (!bare.includes('未列入')) throw new Error('缺未列入段')
+    if (!bare.includes('未删除')) throw new Error(bare)
+    if (!existsSync(join(sandbox, 'debug.log'))) throw new Error('竟然删了')
+  })
+  check('版本库目录不出现', () => {
+    if (bare.includes('.git')) throw new Error('把 .git 列进来了')
+  })
+  const missing = await call({ path: sandbox, items: ['nope.txt'] })
+  check('点名不存在的条目时报找不到', () => {
+    if (!missing.includes('找不到')) throw new Error(missing)
+  })
+  const one = await call({ path: sandbox, notes: { 'debug.log': '本次调试输出，产物不依赖' } })
+  check('确认后只删清单内的文件', () => {
+    if (!one.includes('已删除 1 项')) throw new Error(one)
+    if (existsSync(join(sandbox, 'debug.log'))) throw new Error('没删')
+    if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('删了清单外的文件')
+    if (!existsSync(join(sandbox, '.git'))) throw new Error('删了 .git')
+  })
+  check('确认框带来源说明与不可恢复提示', () => {
+    const q = asked[0]
+    if (!q) throw new Error('没弹确认')
+    if (!q.detail.includes('本次调试输出')) throw new Error(q.detail)
+    if (!q.question.includes('不可恢复')) throw new Error(q.question)
+  })
+  cancelNext = true
+  const cancelled = await call({ path: sandbox, notes: { 'keep.txt': '先留着' } })
+  cancelNext = false
+  check('取消后不删', () => {
+    if (!cancelled.includes('你选择了取消')) throw new Error(cancelled)
+    if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('取消了还删')
+  })
   rmSync(sandbox, { recursive: true, force: true })
 }
 
