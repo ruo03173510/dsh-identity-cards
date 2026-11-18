@@ -1,0 +1,13 @@
+{
+  "name": "dsh-file-vault",
+  "version": "0.1.0",
+  "description": "本地文件索引：按需注册、离线检索、校验重定位、导出可版本化的清单",
+  "type": "module",
+  "bin": { "vault": "src/cli.mjs" },
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "selftest": "node test/selftest.mjs",
+    "bench": "node bench/bench.mjs"
+  },
+  "license": "Apache-2.0"
+}
