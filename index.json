@@ -1,12 +1,12 @@
 {
   "format": 1,
   "title": {
-    "en": "lunhuiruo's DSH plugins",
-    "zh": "lunhuiruo 的 DSH 插件"
+    "en": "ruo03173510's DSH plugins",
+    "zh": "ruo03173510 的 DSH 插件"
   },
   "description": {
-    "en": "DeepSeek Harness plugins by lunhuiruo. Add this file as an index source under Plugins → Discover.",
-    "zh": "lunhuiruo 开发的 DeepSeek Harness 插件。把本文件加成 Plugins → Discover 里的索引源即可浏览。"
+    "en": "DeepSeek Harness plugins by ruo03173510. Add this file as an index source under Plugins → Discover.",
+    "zh": "ruo03173510 开发的 DeepSeek Harness 插件。把本文件加成 Plugins → Discover 里的索引源即可浏览。"
   },
   "metadata": {
     "categories": {
@@ -34,13 +34,13 @@
         "zh": "身份卡"
       },
       "description": {
-        "en": "A card deck for how the agent should work: the card index is injected every turn, one card is claimed per session, switching is declared and the old criteria void. Ships middleware cleanup and a material index.",
-        "zh": "把「AI 该按什么方式干活」做成一套卡：卡片目录每轮注入，一个会话只认一张，切卡必须声明、旧卡判据即刻作废。附带中间件清理与资料索引。"
+        "en": "Put the agent's behavior into cards: prompts, resources and tools are decoupled from the session and loaded per task. Three layers: task-oriented (prompt and resources off the session), rich tooling (long-running multi-project work), identity cards (per-session persona and rules). Ships middleware cleanup, a local file index, and on-demand tool loading.",
+        "zh": "把「AI 该按什么方式干活」做成一套卡：提示词、资源、工具都与会话解耦，按任务加载。三层解耦：面向任务（提示词和资源离开会话）、丰富工具（支持长期多项目开发）、身份卡（会话与资源、提示词解耦的进一步，支持个性化自定义）。附带中间件清理、本地资料索引与工具按需加载。"
       },
-      "author": "lunhuiruo",
-      "homepage": "https://gitee.com/lunhuiruo/dsh-identity-cards#readme",
+      "author": "ruo03173510",
+      "homepage": "https://github.com/ruo03173510/dsh-identity-cards#readme",
       "repository": {
-        "url": "https://gitee.com/lunhuiruo/dsh-identity-cards"
+        "url": "https://github.com/ruo03173510/dsh-identity-cards"
       },
       "metadata": {
         "category": "workflow",
@@ -49,8 +49,10 @@
           "card",
           "prompt",
           "workflow",
+          "task",
           "context",
-          "rules",
+          "decoupling",
+          "tools",
           "cleanup",
           "index"
         ],
@@ -59,12 +61,12 @@
       },
       "versions": [
         {
-          "version": "1.0.2",
-          "publishTimestamp": 1793950973,
+          "version": "2.0.0",
+          "publishTimestamp": 1795060000,
           "source": {
             "type": "git",
-            "url": "https://gitee.com/lunhuiruo/dsh-identity-cards",
-            "commit": "9cb9816af143ecb692fb51252ef19cc7af6932ce"
+            "url": "https://github.com/ruo03173510/dsh-identity-cards",
+            "commit": "c86dd4cdbb476ac88faf151bd419461651e27f8c"
           },
           "engines": {
             "dsh": ">=0.2.0-rc.1"

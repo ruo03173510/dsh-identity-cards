@@ -1,12 +1,18 @@
 {
   "name": "dsh-identity-cards",
-  "version": "1.3.0",
-  "description": "身份卡：给 DSH 加一套「开工前先认卡」的机制——卡片目录每轮注入、一次只认一张、可自动切换；附带中间件清理、资料索引与资源引用。",
+  "version": "2.0.0",
+  "description": "把 AI 的行为装进卡：提示词、资源、工具都与会话解耦，按任务加载。",
   "type": "module",
   "main": "index.js",
   "exports": { ".": "./index.js" },
   "files": ["index.js", "cordis.patch.yml", "examples", "SCHEMA.md", "README.md"],
   "license": "Apache-2.0",
-  "keywords": ["dsh", "cordis", "plugin", "agent", "prompt", "workflow"],
+  "keywords": ["dsh", "cordis", "plugin", "agent", "prompt", "workflow", "task"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ruo03173510/dsh-identity-cards.git"
+  },
+  "homepage": "https://github.com/ruo03173510/dsh-identity-cards#readme",
+  "bugs": { "url": "https://github.com/ruo03173510/dsh-identity-cards/issues" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

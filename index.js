@@ -785,13 +785,18 @@ export function apply(ctx, config = {}) {
     return found
   }
 
-  // 配了 vaultCli 就走 SQLite 索引；没配就试桌面上的开发目录；都没有退回 markdown
+  // vault 后端：config.vaultCli → ~/.dsh/identity.json 的 vaultCli → 都没有就退回 markdown
   const vaultCli = () => {
     if (process.env.DSH_IDENTITY_NO_VAULT === '1') return ''
     const fromConfig = typeof config?.vaultCli === 'string' ? config.vaultCli : ''
     if (fromConfig) return fromConfig
-    const guess = join(homedir(), 'Desktop', 'dsh-file-vault', 'src', 'cli.mjs')
-    return existsSync(guess) ? guess : ''
+    try {
+      const j = JSON.parse(readFileSync(join(homedir(), '.dsh', 'identity.json'), 'utf8'))
+      if (typeof j?.vaultCli === 'string' && j.vaultCli) return j.vaultCli
+    } catch {
+      /* 没配文件就退回 markdown 索引 */
+    }
+    return ''
   }
 
   const vaultRows = query => {
