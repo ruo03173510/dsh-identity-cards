@@ -66,7 +66,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/ruo03173510/dsh-identity-cards",
-            "commit": "c86dd4cdbb476ac88faf151bd419461651e27f8c"
+            "commit": "eed80b3f88c28288c17c7bb00f888c1b8354b02e"
           },
           "engines": {
             "dsh": ">=0.2.0-rc.1"
