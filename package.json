@@ -6,7 +6,7 @@
   "main": "index.js",
   "exports": { ".": "./index.js" },
   "files": ["index.js", "cordis.patch.yml", "examples", "SCHEMA.md", "README.md"],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["dsh", "cordis", "plugin", "agent", "prompt", "workflow"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

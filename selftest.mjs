@@ -5,6 +5,9 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from './index.js'
 
+// 自检走 markdown 索引路径，不触发 vault 子进程
+process.env.DSH_IDENTITY_NO_VAULT = '1'
+
 // 每次运行用一份临时卡库，免得读写真实的 ~/.dsh/cards（尤其是 .claims.json）
 const REAL_CARDS = join(homedir(), '.dsh', 'cards')
 const CARDS = mkdtempSync(join(tmpdir(), 'cards-root-'))
@@ -393,59 +396,49 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
   })
 }
 
-// clean：没有确认就绝不删除
+// clean：按 _tmp_<类>_ 分组，没有确认就绝不删除
 {
   const sandbox = mkdtempSync(join(tmpdir(), 'clean-test-'))
-  mkdirSync(join(sandbox, '_junk'), { recursive: true })
-  writeFileSync(join(sandbox, '_junk', 'a.txt'), 'x')
-  writeFileSync(join(sandbox, 'keep.txt'), 'y')
+  mkdirSync(join(sandbox, '_tmp_session_dep'), { recursive: true })
+  writeFileSync(join(sandbox, '_tmp_session_dep', 'a.txt'), 'x')
+  mkdirSync(join(sandbox, '_tmp_enginee_proj'), { recursive: true })
+  writeFileSync(join(sandbox, '_tmp_enginee_proj', 'b.txt'), 'y')
+  writeFileSync(join(sandbox, 'keep.txt'), 'z')
   const { tool } = makeHarness({ cardsDir: sandbox })
   const call = args => Promise.resolve(tool.execute(args, { agent: { id: 'c1' } })).then(String)
 
   const out = await call({ action: 'clean', path: sandbox })
-  check('clean 只列 _ 开头条目', () => {
-    if (!out.includes('_junk')) throw new Error(out)
+  check('clean 按分类列出 session 与 enginee', () => {
+    if (!out.includes('_tmp_session_dep')) throw new Error(out)
+    if (!out.includes('_tmp_enginee_proj')) throw new Error(out)
     if (out.includes('keep.txt')) throw new Error('把普通文件也列进来了')
+  })
+  check('enginee 默认只列不删', () => {
+    if (!out.includes('默认不删')) throw new Error(out)
+    if (!existsSync(join(sandbox, '_tmp_enginee_proj', 'b.txt'))) throw new Error('enginee 被删了')
   })
   check('没有 userQuestions 时绝不删除', () => {
     if (!out.includes('未删除')) throw new Error(out)
-    if (!existsSync(join(sandbox, '_junk', 'a.txt'))) throw new Error('竟然删了')
-    if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('普通文件被删了')
-  })
-  const noPath = await call({ action: 'clean' })
-  check('clean 缺 path 时明确报错', () => {
-    if (!noPath.includes('需要 path 参数')) throw new Error(noPath)
+    if (!existsSync(join(sandbox, '_tmp_session_dep', 'a.txt'))) throw new Error('竟然删了')
   })
   const guarded = await call({ action: 'clean', path: homedir() })
   check('关键目录被拒绝', () => {
     if (!guarded.includes('拒绝')) throw new Error(guarded)
   })
-  const missing = await call({ action: 'clean', path: join(sandbox, '__not_exist__') })
+  const missingDir = await call({ action: 'clean', path: join(sandbox, '__not_exist__') })
   check('不存在的目录报读不了', () => {
-    if (!missing.includes('读不了目录')) throw new Error(missing)
+    if (!missingDir.includes('读不了目录')) throw new Error(missingDir)
   })
-  check('每项都说明来源与用途', () => {
-    if (!out.includes('来源与用途：')) throw new Error(out)
-    if (!out.includes('来源未标注')) throw new Error('未知条目应有兜底说明')
+  const named = await call({ action: 'clean', mode: 'name', item: 'keep.txt', scope: sandbox })
+  check('name 模式能点名普通文件', () => {
+    if (!named.includes('keep.txt')) throw new Error(named)
   })
-  const annotated = await call({ action: 'clean', path: sandbox, notes: { _junk: '本次生成的测试数据' } })
-  check('notes 能覆盖来源说明', () => {
-    if (!annotated.includes('本次生成的测试数据')) throw new Error(annotated)
-    if (annotated.includes('来源未标注')) throw new Error('应被 notes 覆盖')
-  })
-  const hinted = mkdtempSync(join(tmpdir(), 'clean-hint-'))
-  mkdirSync(join(hinted, '_pages'), { recursive: true })
-  const hintedOut = await call({ action: 'clean', path: hinted })
-  check('按名字能猜出渲染页用途', () => {
-    if (!hintedOut.includes('渲染出来的页面')) throw new Error(hintedOut)
-  })
-  rmSync(hinted, { recursive: true, force: true })
   rmSync(sandbox, { recursive: true, force: true })
 }
 
-// powerful_clean：不看 `_` 前缀，但每项必须有来源说明，且必须确认
+// clean 的 list / force 模式
 {
-  const sandbox = mkdtempSync(join(tmpdir(), 'powerful-clean-'))
+  const sandbox = mkdtempSync(join(tmpdir(), 'clean-modes-'))
   writeFileSync(join(sandbox, 'debug.log'), 'x')
   writeFileSync(join(sandbox, 'keep.txt'), 'y')
   mkdirSync(join(sandbox, '.git'), { recursive: true })
@@ -458,43 +451,12 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
       return { answers: [{ id: q.id, selected: [cancelNext ? q.options[1].label : q.options[0].label] }] }
     },
   }
-  const { tools } = makeHarness({ cardsDir: sandbox, userQuestions: fake })
-  const pc = tools.powerful_clean
-  const call = (args, e = { agent: { id: 'p1' } }) => Promise.resolve(pc.execute(args, e)).then(String)
+  const { tool } = makeHarness({ cardsDir: sandbox, userQuestions: fake })
+  const call = args => Promise.resolve(tool.execute({ action: 'clean', ...args }, { agent: { id: 'm1' } })).then(String)
 
-  check('powerful_clean 与 identity 同时注册', () => {
-    if (!pc) throw new Error('没注册 powerful_clean')
-    if (!tools.identity) throw new Error('identity 没了')
-  })
-  const noPath = await call({})
-  check('powerful_clean 缺 path 时报错', () => {
-    if (!noPath.includes('需要 path 参数')) throw new Error(noPath)
-  })
-  const guarded = await call({ path: homedir() })
-  check('powerful_clean 拒绝主目录', () => {
-    if (!guarded.includes('拒绝')) throw new Error(guarded)
-  })
-  const guardedUp = await call({ path: join(homedir(), '..') })
-  check('powerful_clean 拒绝主目录的上一级', () => {
-    if (!guardedUp.includes('拒绝')) throw new Error(guardedUp)
-  })
-  const bare = await call({ path: sandbox })
-  check('没写来源说明就只列不进清单', () => {
-    if (!bare.includes('debug.log')) throw new Error(bare)
-    if (!bare.includes('未列入')) throw new Error('缺未列入段')
-    if (!bare.includes('未删除')) throw new Error(bare)
-    if (!existsSync(join(sandbox, 'debug.log'))) throw new Error('竟然删了')
-  })
-  check('版本库目录不出现', () => {
-    if (bare.includes('.git')) throw new Error('把 .git 列进来了')
-  })
-  const missing = await call({ path: sandbox, items: ['nope.txt'] })
-  check('点名不存在的条目时报找不到', () => {
-    if (!missing.includes('找不到')) throw new Error(missing)
-  })
-  const one = await call({ path: sandbox, notes: { 'debug.log': '本次调试输出，产物不依赖' } })
-  check('确认后只删清单内的文件', () => {
-    if (!one.includes('已删除 1 项')) throw new Error(one)
+  const confirmed = await call({ mode: 'list', items: ['debug.log'], scope: sandbox })
+  check('list 模式确认后只删点名文件', () => {
+    if (!confirmed.includes('已删除 1 项')) throw new Error(confirmed)
     if (existsSync(join(sandbox, 'debug.log'))) throw new Error('没删')
     if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('删了清单外的文件')
     if (!existsSync(join(sandbox, '.git'))) throw new Error('删了 .git')
@@ -502,15 +464,24 @@ const run = (tool, args) => Promise.resolve(tool.execute(args)).then(String)
   check('确认框带来源说明与不可恢复提示', () => {
     const q = asked[0]
     if (!q) throw new Error('没弹确认')
-    if (!q.detail.includes('本次调试输出')) throw new Error(q.detail)
+    if (!q.detail.includes('debug.log')) throw new Error(q.detail)
     if (!q.question.includes('不可恢复')) throw new Error(q.question)
   })
+  const missing = await call({ mode: 'list', items: ['nope.txt'], scope: sandbox })
+  check('点名不存在的条目时报找不到', () => {
+    if (!missing.includes('找不到')) throw new Error(missing)
+  })
   cancelNext = true
-  const cancelled = await call({ path: sandbox, notes: { 'keep.txt': '先留着' } })
+  const cancelled = await call({ mode: 'list', items: ['keep.txt'], scope: sandbox })
   cancelNext = false
   check('取消后不删', () => {
     if (!cancelled.includes('你选择了取消')) throw new Error(cancelled)
     if (!existsSync(join(sandbox, 'keep.txt'))) throw new Error('取消了还删')
+  })
+  const forced = await call({ mode: 'force', item: 'keep.txt', scope: sandbox })
+  check('force 模式强删单个', () => {
+    if (!forced.includes('已强删')) throw new Error(forced)
+    if (existsSync(join(sandbox, 'keep.txt'))) throw new Error('没删')
   })
   rmSync(sandbox, { recursive: true, force: true })
 }

@@ -14,6 +14,7 @@
  * 互斥靠会话级状态（按 agent id）。任何一步出错都静默降级，绝不阻断会话。
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -188,10 +189,9 @@ function render(dir, max, opts = {}) {
     '2. 文档不写分隔线，不用 Word 域、自动目录、自动题注（黑方块的来源）。',
     '3. 不写「首先 / 其次 / 最后 / 综上所述 / 总的来说」这类模板化连接词。',
     '4. 结论先行：不在结尾堆总结段和客套，不复述对方刚说过的话。',
-    '5. 中间文件必须可枚举：**本次生成、只为产出结果服务**的文件（不含开始时已有的输入和最终成果），一律以 `_` 开头或放进 `_tmp/`；交付物不带前缀。',
+    '5. 中间文件必须可枚举：本次生成、只为产出结果服务的目录，一律用 `_tmp_<类>_名字` 命名，类别只这四个——`session` 会话依赖、`enginee` 可复用的工程文件、`transport` 转换工具与中间态、`record` 转换产物。`record` 是成果，清理时会用正向提问确认是否保留。交付物不带前缀。',
     '6. 改了东西就要有可复跑的验证证据（把改动退回后它应当失败）；纯讨论、判断、评审不写验证行。',
-    '7. 新建或大修资源必须登记：调用 `identity` 的 `library` 动作，mode=report，一句话说明这是什么、放哪、给谁用。判据：**三个月后你还找得到吗？**',
-    '   找东西：**不确定在哪个盘/项目**时先 `library` mode=find；**已经在某个项目里**就直接列目录，别查索引。按索引访问发现不对，report 一条「路径失效」。',
+    '7. 新建或大修资源必须登记：调用 `identity` 的 `library` 动作，mode=report，一句话说明这是什么、放哪、给谁用。判据：**三个月后你还找得到吗？** 找东西先 `library` mode=find；已经在某个项目里就直接列目录，别查索引。',
     '> 只放跨卡、反模型默认习惯的规则；业务规则进卡，别往这里加。',
   )
   return lines.join('\n')
@@ -456,6 +456,61 @@ export function apply(ctx, config = {}) {
   }
 
   const registeredNames = []
+
+  // 装配时按卡/全局 allowlist 裁剪工具 schema。都没配就只记数、原样返回
+  const KEEP_ALWAYS = new Set(['identity', 'skill', 'tool_admin'])
+  const runtimeGranted = new Set()
+  // 持久白名单存一个小 JSON，跨重启保留
+  const grantsFile = join(homedir(), '.dsh', 'tool-grants.json')
+  const loadGrants = () => {
+    try {
+      const j = JSON.parse(readFileSync(grantsFile, 'utf8'))
+      return Array.isArray(j?.always) ? j.always.filter((n) => typeof n === 'string') : []
+    } catch {
+      return []
+    }
+  }
+  const saveGrants = (list) => {
+    try {
+      writeFileSync(grantsFile, JSON.stringify({ always: list }, null, 2), 'utf8')
+    } catch {
+      /* 写不进去只影响持久化，内存里仍然生效 */
+    }
+  }
+  const persistentGranted = new Set(loadGrants())
+  let lastAllTools = []
+  let assembleProbes = 0
+  if (typeof ctx.on === 'function') {
+    try {
+      ctx.on('system-prompt/assemble', async (...args) => {
+        const [assembly, context, next] = args
+        const base = typeof next === 'function' ? await next() : assembly
+        const tools = Array.isArray(base?.tools) ? base.tools : null
+        if (!tools) return base
+        lastAllTools = tools.map((t) => t?.name).filter(Boolean)
+
+        // scope 可能是 agent 本身，也可能是 scope key；两种都试
+        const scopeId = context?.scope?.id ?? context?.scope ?? context?.agent?.id ?? null
+        const cardId = scopeId === null ? null : (claims.get(String(scopeId))?.id ?? null)
+        const byCard = config?.toolAllowlistByCard && typeof config.toolAllowlistByCard === 'object' ? config.toolAllowlistByCard : null
+        const cardList = cardId && byCard && Array.isArray(byCard[cardId]) ? byCard[cardId] : null
+        const globalList = Array.isArray(config?.toolAllowlist) && config.toolAllowlist.length ? config.toolAllowlist : null
+        const list = cardList ?? globalList
+
+        assembleProbes += 1
+        if (!list) {
+          if (assembleProbes <= 1) logLoad(dir, `assemble tools=${tools.length} scope=${scopeId} card=${cardId}（无白名单，不过滤）`)
+          return base
+        }
+        const allow = new Set([...list, ...KEEP_ALWAYS, ...runtimeGranted, ...persistentGranted])
+        const filtered = tools.filter((t) => allow.has(t?.name))
+        if (assembleProbes <= 3) logLoad(dir, `assemble#${assembleProbes} tools ${tools.length} -> ${filtered.length} scope=${scopeId} card=${cardId} granted=${runtimeGranted.size}`)
+        return { ...base, tools: filtered }
+      })
+    } catch (e) {
+      logLoad(dir, `assemble-listener fail ${e?.message ?? e}`)
+    }
+  }
 
   const listAction = () => {
     const cards = collect(dir, max)
@@ -730,7 +785,45 @@ export function apply(ctx, config = {}) {
     return found
   }
 
+  // 配了 vaultCli 就走 SQLite 索引；没配就试桌面上的开发目录；都没有退回 markdown
+  const vaultCli = () => {
+    if (process.env.DSH_IDENTITY_NO_VAULT === '1') return ''
+    const fromConfig = typeof config?.vaultCli === 'string' ? config.vaultCli : ''
+    if (fromConfig) return fromConfig
+    const guess = join(homedir(), 'Desktop', 'dsh-file-vault', 'src', 'cli.mjs')
+    return existsSync(guess) ? guess : ''
+  }
+
+  const vaultRows = query => {
+    const cli = vaultCli()
+    if (!cli) return null
+    try {
+      // ELECTRON_RUN_AS_NODE：在桌面版里用同一个内置 Node 跑，不依赖 PATH
+      const out = execFileSync(process.execPath, [cli, 'find', String(query || ''), '--json', '--limit', '8'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        windowsHide: true,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+      })
+      const rows = JSON.parse(out)
+      return Array.isArray(rows) ? rows : null
+    } catch {
+      return null
+    }
+  }
+
   const libraryFind = query => {
+    const vrows = vaultRows(query)
+    if (vrows) {
+      if (!vrows.length) return `vault 里没有匹配「${query}」。`
+      const lines = vrows.map(r => {
+        const kb = Math.max(1, Math.round(r.size / 1024))
+        const day = new Date(r.mtime).toISOString().slice(0, 10)
+        const sum = r.summary ? `\n    摘要：${r.summary}` : ''
+        return `- ${r.id}｜${r.rel_path}｜${kb} KB｜${day}${sum}`
+      })
+      return `vault 命中 ${vrows.length} 条：\n${lines.join('\n')}\n用 vault show <id> 看正文。`
+    }
     const { file, rows } = readIndexRows()
     if (!rows.length) return `索引还是空的：${file}\n让 librarian 卡扫一遍，或先手工加几行。`
     const q = String(query || '').trim().toLowerCase()
@@ -873,7 +966,7 @@ export function apply(ctx, config = {}) {
     return `扫了 ${cards.length} 张卡：引用 ${ok + broken} 条，正常 ${ok}，断链 ${broken}。\n索引：${indexFile()}${tail}`
   }
 
-  /** 读目录条目并统计体积，clean 与 powerful_clean 共用。 */
+  /** 读目录条目并统计体积，clean 用。 */
   const scanEntries = resolved =>
     readdirSync(resolved, { withFileTypes: true }).map(entry => {
       const full = join(resolved, entry.name)
@@ -937,94 +1030,110 @@ export function apply(ctx, config = {}) {
     return failed.length ? `${done}\n失败 ${failed.length} 项：\n- ${failed.join('\n- ')}` : done
   }
 
-  const cleanAction = async (exec, target, notes = {}) => {
-    if (!target) return '需要 path 参数：要扫描的目录'
-    const resolved = resolve(target)
-    const guard = protectPath(resolved)
-    if (guard) return guard
-    let all
-    try {
-      all = scanEntries(resolved)
-    } catch (error) {
-      return `读不了目录：${error?.message ?? error}`
-    }
-    const hits = all
-      .filter(entry => entry.name.startsWith('_'))
-      .map(hit => ({
-        ...hit,
-        note:
-          notes[hit.name] ||
-          describeName(hit.name) ||
-          '来源未标注（`_` 前缀中间件，请确认是不是本次生成、只服务于产物的文件）',
-      }))
-    if (!hits.length) return `${resolved}：没有 \`_\` 开头的中间件。`
-    const sum = hits.reduce((acc, hit) => acc + hit.total, 0)
-    return removeWithConfirm(exec, {
-      askId: 'clean',
-      header: '清理中间件',
-      title: `扫描 ${resolved}：`,
-      question: `确认删除 ${hits.length} 项？共 ${formatSize(sum)}`,
-      deleteLabel: '全部删除',
-      hits,
-    })
-  }
+  const CLEAN_TMP_RE = /^_tmp_(session|enginee|transport|record)_(.+)$/
 
   /**
-   * 强力清理：不受 `_` 前缀限制，代价是每项必须由调用方写清来源与用途，没写的不进清单。
-   * 只在使用者本轮明确点名用它时才该被调用，见工具描述。
+   * 四档清理：
+   * tmp（默认）按 _tmp_<类>_ 分组，session/transport 问删，enginee 只列，record 正向问保留；
+   * name 点名删除，范围由 scope 指定或推测；
+   * list 指定清单，无视命名；
+   * force 强删单个条目，失败只报告占用，不自动杀进程。
    */
-  const powerfulCleanAction = async (exec, target, notes = {}, items = []) => {
-    if (!target) return '需要 path 参数：要扫描的目录'
-    const resolved = resolve(target)
-    const guard = protectPath(resolved) || protectWide(resolved)
+  const cleanAction = async (exec, options = {}) => {
+    const { path: target, notes = {}, mode = 'tmp', item = '', items = [], scope = '' } = options
+    const base = resolve(scope || target || process.cwd())
+    const guard = protectPath(base)
     if (guard) return guard
     let all
     try {
-      all = scanEntries(resolved)
+      all = scanEntries(base)
     } catch (error) {
       return `读不了目录：${error?.message ?? error}`
     }
-    const wanted = [...new Set((Array.isArray(items) ? items : []).map(item => String(item).trim()).filter(Boolean))]
-    const pool = all.filter(entry => !CLEAN_DENY.has(entry.name))
-    const missing = []
-    let candidates = pool
-    if (wanted.length) {
-      const byName = new Map(pool.map(entry => [entry.name, entry]))
-      candidates = wanted.map(item => byName.get(item)).filter(Boolean)
-      for (const item of wanted) if (!byName.has(item)) missing.push(item)
-      if (!candidates.length) {
-        return `没有可清理的条目：${missing.join('、')}（${resolved} 下找不到，或属于版本库 / node_modules）`
+    const wanted = [...new Set((Array.isArray(items) ? items : []).map((x) => String(x).trim()).filter(Boolean))]
+    const findOne = (name) => all.find((entry) => entry.name === name)
+    const noteOf = (entry) => notes[entry.name] || describeName(entry.name) || '来源未标注'
+
+    if (mode === 'force') {
+      const name = String(item || '').trim()
+      if (!name) return 'force 模式需要 item 参数：要强删的单个条目名'
+      const entry = findOne(name)
+      if (!entry) return `${base} 下没找到 ${name}`
+      if (CLEAN_DENY.has(entry.name)) return `${name} 属于版本库或依赖目录，拒绝`
+      try {
+        rmSync(entry.full, { recursive: true, force: true })
+        return `已强删 ${entry.full}`
+      } catch (error) {
+        return `删除失败：${error?.message ?? error}\n可能是进程占用。这里不自动杀进程，请手动关闭相关程序后重试。`
       }
     }
-    if (candidates.length > 40 && !wanted.length) {
-      return `${resolved}：扫出 ${candidates.length} 个条目，超过一次 40 个的上限。收窄到子目录，或用 items 点名。`
-    }
-    const hits = []
-    const skipped = []
-    for (const entry of candidates) {
-      const note = typeof notes?.[entry.name] === 'string' ? notes[entry.name].trim() : ''
-      if (note) hits.push({ ...entry, note })
-      else skipped.push(entry)
-    }
-    const extra = []
-    if (skipped.length) {
-      extra.push('未列入（缺来源说明，补 notes 后才会进清单）：')
-      for (const entry of skipped) {
-        const hint = describeName(entry.name)
-        extra.push(`- ${entry.name}${hint ? `（名字像：${hint}）` : ''}`)
+
+    if (mode === 'list' || mode === 'name') {
+      const names = wanted.length ? wanted : item ? [String(item).trim()] : []
+      if (!names.length) return `${mode} 模式需要 item 或 items 参数`
+      const byName = new Map(all.map((entry) => [entry.name, entry]))
+      const hits = []
+      const missing = []
+      for (const name of names) {
+        const entry = byName.get(name)
+        if (entry && !CLEAN_DENY.has(entry.name)) hits.push({ ...entry, note: noteOf(entry) })
+        else missing.push(name)
       }
+      const extra = missing.length ? [`找不到或受保护：${missing.join('、')}`] : []
+      return removeWithConfirm(exec, {
+        askId: `clean-${mode}`,
+        header: '指定清理',
+        title: `${base} 下点名 ${names.length} 个条目：`,
+        question: `确认删除 ${hits.length} 项？共 ${formatSize(hits.reduce((acc, hit) => acc + hit.total, 0))}，不可恢复`,
+        deleteLabel: '删除',
+        hits,
+        extra,
+      })
     }
-    if (missing.length) extra.push(`找不到：${missing.join('、')}`)
-    const sum = hits.reduce((acc, hit) => acc + hit.total, 0)
-    return removeWithConfirm(exec, {
-      askId: 'powerful-clean',
-      header: '强力清理',
-      title: `扫描 ${resolved}（不受 \`_\` 前缀限制）：`,
-      question: hits.length ? `确认删除 ${hits.length} 项？共 ${formatSize(sum)}，不可恢复` : '没有可删的条目，未删除',
-      deleteLabel: `删除以上 ${hits.length} 项`,
-      hits,
-      extra,
-    })
+
+    const groups = { session: [], enginee: [], transport: [], record: [] }
+    const unmarked = []
+    for (const entry of all) {
+      const m = CLEAN_TMP_RE.exec(entry.name)
+      if (m) groups[m[1]].push({ ...entry, note: noteOf(entry) })
+      else if (entry.name.startsWith('_')) unmarked.push(entry.name)
+    }
+    const out = []
+    for (const key of ['session', 'transport']) {
+      if (!groups[key].length) continue
+      const sum = groups[key].reduce((acc, hit) => acc + hit.total, 0)
+      out.push(await removeWithConfirm(exec, {
+        askId: `clean-${key}`,
+        header: `清理 ${key}`,
+        title: `${base} 下的 _tmp_${key}_ 条目：`,
+        question: `确认删除这 ${groups[key].length} 项？共 ${formatSize(sum)}，不可恢复`,
+        deleteLabel: '确认删除',
+        hits: groups[key],
+      }))
+    }
+    if (groups.enginee.length) {
+      const sum = groups.enginee.reduce((acc, hit) => acc + hit.total, 0)
+      out.push([
+        `_tmp_enginee_ ${groups.enginee.length} 项，${formatSize(sum)}——工程文件，默认不删。`,
+        ...groups.enginee.map((hit) => `- ${hit.name}`),
+        '要删请用 mode=name 点名。',
+      ].join('\n'))
+    }
+    if (groups.record.length) {
+      const sum = groups.record.reduce((acc, hit) => acc + hit.total, 0)
+      out.push(await removeWithConfirm(exec, {
+        askId: 'clean-record',
+        header: '清理 record',
+        title: `${base} 下的 _tmp_record_ 条目：`,
+        question: `这些是任务产出，确定不作为知识资产保留吗？确认后会删除这 ${groups.record.length} 项（${formatSize(sum)}）`,
+        deleteLabel: '不保留，删除',
+        hits: groups.record,
+      }))
+    }
+    if (unmarked.length) {
+      out.push(`另有 ${unmarked.length} 个 \`_\` 开头的未标注条目（旧格式），不参与分类清理：${unmarked.slice(0, 10).join('、')}${unmarked.length > 10 ? ' …' : ''}`)
+    }
+    return out.length ? out.join('\n\n') : `${base}：没有 \`_tmp_<类>_\` 条目。`
   }
 
   const manualAction = (group) => {
@@ -1128,7 +1237,7 @@ export function apply(ctx, config = {}) {
   const definition = {
     name: 'identity',
     description:
-      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 扫描 `_` 开头的中间件、弹窗确认后删除并逐项说明来源与用途（不符合 `_` 规范的条目要用 powerful_clean 工具，且只在使用者明确要求时用）；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）；resolve 看某条资源解析到哪（id + name，四个作用域 private/shared/project/global）；resources mode=scan 扫引用、重建索引并把漂移写进更新表，mode=status 看汇总。',
+      '身份卡通用命令：会话默认是「默认卡」（未指定身份）。use 从默认卡认领一张卡（自动，只告知，全文注入一次）；switch 从一张具体卡换到另一张（auto=true 可不问，前两次有效，第三次起仍会问你；切换后旧卡判据即刻作废，回复第一行须写「已切至身份卡：<id>」）；current 看当前生效的卡；release 不允许（回不到默认卡）；manual 分级表；list 列卡；show 看卡全文；reference 带标注参考另一张卡；write 新增或修改卡；audit 审计提示层；doctor 自检；clean 四档清理：tmp 按 `_tmp_<类>_` 分组（session/transport 问删、enginee 只列、record 正向问保留）、name 点名、list 指定清单、force 强删单个且失败只报占用；library 资料索引——mode=find 按关键词查路径（带未确认天数），mode=report 提交一条材料更新（新建/大修后必须报）；resolve 看某条资源解析到哪（id + name，四个作用域 private/shared/project/global）；resources mode=scan 扫引用、重建索引并把漂移写进更新表，mode=status 看汇总。',
     parameters: {
       type: 'object',
       properties: {
@@ -1150,6 +1259,14 @@ export function apply(ctx, config = {}) {
           additionalProperties: { type: 'string' },
           description: 'clean 用：逐项补一句来源与用途，键为条目名（如 {"_pages":"实验报告 PDF 渲染页，用于逐页目检"}）',
         },
+        mode: {
+          type: 'string',
+          enum: ['tmp', 'name', 'list', 'force'],
+          description: 'clean 用：tmp 按 _tmp_<类>_ 分组清理（默认，session/transport 问删、enginee 只列、record 正向问保留）；name 点名一个；list 指定清单；force 强删单个且失败只报占用',
+        },
+        item: { type: 'string', description: 'clean 用：name / force 模式下的条目名' },
+        items: { type: 'array', items: { type: 'string' }, description: 'clean 用：list 模式的条目清单' },
+        scope: { type: 'string', description: 'clean 用：条目所在目录，默认用 path 或当前目录' },
         markdown: { type: 'string', description: '整张卡的 markdown 内容（write 用）' },
         group: { type: 'string', description: 'manual 用：只看某一组' },
         verify: { type: 'string', description: 'use 用：本会话的验收命令，覆盖卡里的默认值' },
@@ -1176,7 +1293,16 @@ export function apply(ctx, config = {}) {
         if (action === 'write') return writeAction(args?.id, args?.markdown)
         if (action === 'audit') return await auditAction(args?.verbose === true)
         if (action === 'doctor') return doctorAction(exec)
-        if (action === 'clean') return await cleanAction(exec, args?.path, args?.notes)
+        if (action === 'clean') {
+          return await cleanAction(exec, {
+            path: args?.path,
+            notes: args?.notes,
+            mode: args?.mode,
+            item: args?.item,
+            items: args?.items,
+            scope: args?.scope,
+          })
+        }
         if (action === 'library') {
           if (args?.mode === 'report') return libraryReport(exec, args?.item, args?.change, args?.note)
           return libraryFind(args?.query)
@@ -1190,44 +1316,63 @@ export function apply(ctx, config = {}) {
     },
   }
 
-  const powerfulDefinition = {
-    name: 'powerful_clean',
+  const toolAdminDefinition = {
+    name: 'tool_admin',
     description:
-      '强力清理：只有使用者本轮明确要求「用 powerful_clean 清」时才调用，别自己判断后调用。和 clean 的区别是不看 `_` 前缀，普通名字的中间件也能列进来；代价是每项必须由你在 notes 里写明来源与用途，没写的不进删除清单。先列清单再弹窗确认，确认后才删。版本库目录（.git / .hg / .svn）与 node_modules 一律跳过；盘符根、用户主目录、DSH_HOME 及其上一级直接拒绝；一次最多处理 40 个条目。传 items 可只处理点名的条目。',
+      '工具白名单的查看与增补。action=list 列出全部工具，标出可见、被裁、持久、临时；action=enable 临时加回（本会话有效，重启失效）；action=always 持久加回（写入 ~/.dsh/tool-grants.json，跨重启有效）；action=forget 从持久和临时里一起移除。身份卡缺少某个工具时，先告诉用户缺哪个、是要临时还是持久，用户同意后再执行，不要自己决定。',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '要扫描的目录，只处理该目录下的第一层条目' },
-        notes: {
-          type: 'object',
-          additionalProperties: { type: 'string' },
-          description:
-            '必写：逐项说明来源与用途，键为条目名（如 {"debug.log":"本次调试输出，产物不依赖"}）。没写说明的条目不进删除清单',
-        },
-        items: {
-          type: 'array',
-          items: { type: 'string' },
-          description: '可选：只处理点名的条目（目录下第一层的名字）',
-        },
+        action: { type: 'string', enum: ['list', 'enable', 'always', 'forget'], description: 'list 查看；enable 临时加回；always 持久加回；forget 移除' },
+        name: { type: 'string', description: 'enable / always / forget 用：工具名' },
       },
-      required: ['path'],
+      required: ['action'],
       additionalProperties: false,
     },
     output: {
       schema: { type: 'string' },
       render: (args, value) => [{ type: 'text', text: String(value ?? '') }],
     },
-    async execute(args, exec) {
-      try {
-        return await powerfulCleanAction(exec, args?.path, args?.notes, args?.items)
-      } catch (error) {
-        return `执行失败：${error?.message ?? error}`
+    async execute(args) {
+      const action = args?.action
+      if (action === 'enable' || action === 'always') {
+        const name = String(args?.name ?? '').trim()
+        if (!name) return '需要 name 参数'
+        if (!lastAllTools.includes(name)) return `没有这个工具：${name}`
+        if (action === 'enable') {
+          runtimeGranted.add(name)
+          return `已临时加回 ${name}，本会话有效，重启后失效。`
+        }
+        persistentGranted.add(name)
+        saveGrants([...persistentGranted])
+        return `已持久加回 ${name}，写入 ${grantsFile}，跨重启有效。`
       }
+      if (action === 'forget') {
+        const name = String(args?.name ?? '').trim()
+        if (!name) return '需要 name 参数'
+        runtimeGranted.delete(name)
+        const had = persistentGranted.delete(name)
+        saveGrants([...persistentGranted])
+        return had ? `已从持久白名单移除 ${name}` : `持久白名单里没有 ${name}（临时加回也已清除）`
+      }
+      const base = [...(Array.isArray(config?.toolAllowlist) ? config.toolAllowlist : []), ...KEEP_ALWAYS, ...runtimeGranted, ...persistentGranted]
+      const allowed = new Set(base)
+      const visible = lastAllTools.filter((n) => allowed.has(n))
+      const hidden = lastAllTools.filter((n) => !allowed.has(n))
+      return [
+        `全部 ${lastAllTools.length} 个工具`,
+        `可见 ${visible.length}：${visible.join(', ') || '（无）'}`,
+        `持久 ${persistentGranted.size}：${[...persistentGranted].join(', ') || '（无）'}`,
+        `临时 ${runtimeGranted.size}：${[...runtimeGranted].join(', ') || '（无）'}`,
+        `被裁 ${hidden.length}：${hidden.join(', ') || '（无）'}`,
+        hidden.length ? `临时加回：tool_admin action=enable name=<工具名>` : '',
+        hidden.length ? `持久加回：tool_admin action=always name=<工具名>` : '',
+      ].filter(Boolean).join('\n')
     },
   }
 
   let registered = 0
-  for (const def of [definition, powerfulDefinition]) {
+  for (const def of [definition, toolAdminDefinition]) {
     try {
       const disposer = tools.register(def)
       registered += 1

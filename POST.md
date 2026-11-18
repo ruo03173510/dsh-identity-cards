@@ -76,4 +76,4 @@ dsh plugin add git+https://gitee.com/lunhuiruo/dsh-identity-cards.git
 
 https://gitee.com/lunhuiruo/dsh-identity-cards
 
-MIT。有问题提 Issue，或者直接在评论里说——**尤其是第 4 条，我很想知道**。
+Apache-2.0。有问题提 Issue，或者直接在评论里说——**尤其是第 4 条，我很想知道**。
